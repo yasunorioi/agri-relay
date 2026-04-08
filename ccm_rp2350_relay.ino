@@ -20,6 +20,7 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <SensirionI2cSht4x.h>
+#include <SensirionI2cScd4x.h>
 #include <LEAmDNS.h>
 #include <Updater.h>
 #include <Adafruit_NeoPixel.h>
@@ -61,6 +62,11 @@ const int W5500_INT  = -1;
 const int RS485_TX = 4;
 const int RS485_RX = 5;
 const int RS485_DEFAULT_BAUD = 9600;
+
+// ========== SEN0575 TTL UART (GPIO44/45 expansion header) ==========
+const int SEN0575_TX_PIN = 44;  // RP2350 TX → SEN0575 C/R(RX)
+const int SEN0575_RX_PIN = 45;  // RP2350 RX ← SEN0575 D/T(TX)
+SerialPIO sen0575Serial(SEN0575_TX_PIN, SEN0575_RX_PIN, 64);
 
 // ========== I2C0 Pins (RTC PCF85063) ==========
 const int I2C_SDA = 6;  // I2C1 SDA (not I2C0 — GPIO6 is I2C1 per RP2350 pinmux)
@@ -137,6 +143,7 @@ struct IrrigationCtrl {
   float  threshold_mj;    // 積算日射量閾値 (MJ/m²) — 到達で灌水開始
   int    duration_sec;    // 灌水時間 (秒)
   float  min_wm2;         // この日射量未満は積算しない (夜間ノイズ除外)
+  int    drain_stop_sec;  // 排水検知で灌水停止する秒数 (0=無効)
 };
 
 const int IRRI_SLOTS = 2;  // 最大2ルール (e.g. 点滴+ミスト)
@@ -149,6 +156,8 @@ struct IrriRuntime {
   unsigned long irri_start;     // 灌水開始時刻 (millis)
   unsigned long last_sample;    // 最終サンプル時刻 (millis)
   int           today_count;    // 本日の灌水回数
+  uint32_t      drain_prev_tips;    // 前回チェック時のtipカウント
+  unsigned long drain_active_since; // 排水tip増加が始まった時刻 (0=非検知)
 };
 IrriRuntime irriRun[IRRI_SLOTS];
 
@@ -197,6 +206,25 @@ struct RateRuntime {
 };
 RateRuntime rateRun = {NAN, 0, 0.0, false, 0};
 
+// ========== CO2 Guard ==========
+const int CO2_GUARD_ACTIONS = 4;
+struct CO2GuardAction {
+  int relay_ch;    // リレーch (0-7, -1=none)
+  int duration_sec; // ON時間 (秒)
+};
+struct CO2GuardCtrl {
+  bool enabled;
+  uint16_t threshold_ppm; // この値以下で発動
+  CO2GuardAction actions[CO2_GUARD_ACTIONS];
+};
+CO2GuardCtrl co2Guard;
+struct CO2GuardRuntime {
+  bool active;                          // 発動中
+  unsigned long action_start[CO2_GUARD_ACTIONS]; // 各アクションのON開始時刻 (0=未発動)
+  bool action_on[CO2_GUARD_ACTIONS];             // 各リレーがON中か
+};
+CO2GuardRuntime co2Run = {};
+
 // ========== Timing ==========
 const int           SENSOR_INTERVAL      = 10;
 const int           ETH_CONNECT_TIMEOUT  = 15;
@@ -205,6 +233,22 @@ const unsigned long NTP_SYNC_INTERVAL    = 3600000UL;
 
 // ========== HW WDT ==========
 const int HW_WDT_TIMEOUT_MS = 8000;
+
+// ========== Relay Arbitration Layer ==========
+// 各制御者が claim/release でビットを立て、resolveAllRelays() で物理出力を確定
+// OR合成（誰かがON→ON）、暖房chのみAND合成（全員ON→ON）
+enum RelayOwner : uint8_t {
+  OWN_GH       = 0,  // 温室温度制御
+  OWN_IRRI     = 1,  // 灌水
+  OWN_DEW      = 2,  // 結露防止
+  OWN_RATE     = 3,  // 急昇温ガード
+  OWN_CO2      = 4,  // CO2ガード
+  OWN_CCM      = 5,  // CCM受信
+  OWN_MANUAL   = 6,  // WebUI手動 / DI連動
+  OWN_COUNT    = 7
+};
+uint8_t relayClaims[8]     = {0};  // ビットマスク: bit N = OWN_xxx が ON 要求中
+uint8_t relayInterested[8] = {0};  // ビットマスク: bit N = OWN_xxx がこのchに関与したことがある
 
 // ========== Global State ==========
 uint8_t      relayState          = 0x00;
@@ -222,6 +266,12 @@ bool  sht40_detected    = false;
 int   sht40_error_count = 0;
 float g_sht40_temp      = NAN;
 float g_sht40_hum       = NAN;
+
+bool     scd41_detected    = false;
+int      scd41_error_count = 0;
+uint16_t g_scd41_co2       = 0;
+float    g_scd41_temp      = NAN;
+float    g_scd41_hum       = NAN;
 
 bool  ds18b20_detected  = false;
 float g_ds18b20_temp    = NAN;
@@ -249,6 +299,7 @@ WiFiUDP        ccmUDP;      // CCM multicast send/receive
 WiFiUDP        ntpUDP;
 NTPClient      timeClient(ntpUDP, "pool.ntp.org", 0);
 SensirionI2cSht4x sht4x;
+SensirionI2cScd4x scd4x;
 Adafruit_NeoPixel rgbLED(WS2812_NUM, WS2812_PIN, NEO_GRB + NEO_KHZ800);
 OneWire           oneWire(ONEWIRE_PIN);
 DallasTemperature ds18b20(&oneWire);
@@ -260,11 +311,15 @@ String mdnsHostname;
 int    rs485Baud = RS485_DEFAULT_BAUD;
 
 // ========== RS485 / SEN0575 ==========
-const uint8_t  SEN0575_ADDR          = 0xC0;
-const uint16_t SEN0575_REG_CUMRAIN_H = 0x0007;
-const uint16_t SEN0575_REG_RAWDATA_H = 0x0009;
-const uint16_t SEN0575_REG_SYSTIME   = 0x000B;
-const uint16_t SEN0575_REG_PID_H     = 0x0000;
+// Modbus RTU register map (Input Registers, FC=0x04)
+const uint8_t  SEN0575_ADDR              = 0xC0;
+const uint16_t SEN0575_REG_PID           = 0x0000;  // PID (1 register)
+const uint16_t SEN0575_REG_VID           = 0x0001;  // VID (1 register)
+const uint16_t SEN0575_REG_CUMRAIN_L     = 0x0008;  // Cumulative rainfall Low
+const uint16_t SEN0575_REG_CUMRAIN_H     = 0x0009;  // Cumulative rainfall High
+const uint16_t SEN0575_REG_RAWDATA_L     = 0x000A;  // Raw tipping count Low
+const uint16_t SEN0575_REG_RAWDATA_H     = 0x000B;  // Raw tipping count High
+const uint16_t SEN0575_REG_SYSTIME       = 0x000C;  // System working time (min)
 
 bool     sen0575_detected    = false;
 uint32_t sen0575_cumRainRaw  = 0;
@@ -277,6 +332,9 @@ void loadCcmMapping();
 void saveCcmMapping();
 void initEthernet();
 void setRelay(uint8_t ch, bool on);
+void claimRelay(uint8_t ch, RelayOwner owner);
+void releaseRelay(uint8_t ch, RelayOwner owner);
+void resolveAllRelays();
 void initRelaysOff();
 bool readDI();
 void scanI2CSensors();
@@ -314,6 +372,9 @@ void saveIrrigationConfig();
 void irrigationControl(unsigned long now);
 void sendIrrigationPage(WiFiClient& client);
 void handleIrrigationPost(WiFiClient& client, const String& body);
+void loadCO2GuardConfig();
+void saveCO2GuardConfig();
+void co2GuardControl(unsigned long now);
 float readADS1110();
 int calcSunriseMinLocal(int dayOfYear, float lat, float lon, int tz_h);
 void loadDewConfig();
@@ -421,6 +482,48 @@ void setRelay(uint8_t ch, bool on) {
   Serial.printf("Relay CH%d %s  (state=0x%02X)\n", ch, on ? "ON" : "OFF", relayState);
 }
 
+// 暖房chか判定 (AirHeatBurn / AirHeatHP)
+bool isHeaterCh(uint8_t idx) {
+  return (strcmp(ccmMap[idx].ccmType, "AirHeatBurn") == 0 ||
+          strcmp(ccmMap[idx].ccmType, "AirHeatHP") == 0);
+}
+
+// 制御者がリレーをON要求
+void claimRelay(uint8_t ch, RelayOwner owner) {
+  if (ch < 1 || ch > 8) return;
+  uint8_t idx = ch - 1;
+  relayClaims[idx]     |= (1 << owner);
+  relayInterested[idx] |= (1 << owner);
+}
+
+// 制御者がリレーON要求を取り下げ
+void releaseRelay(uint8_t ch, RelayOwner owner) {
+  if (ch < 1 || ch > 8) return;
+  uint8_t idx = ch - 1;
+  relayClaims[idx]     &= ~(1 << owner);
+  relayInterested[idx] |= (1 << owner);
+}
+
+// 全chのclaims→物理出力を確定（ループ末尾で1回呼ぶ）
+void resolveAllRelays() {
+  for (int i = 0; i < 8; i++) {
+    bool shouldOn;
+    if (isHeaterCh(i)) {
+      // AND合成: 関与者全員がclaim中の時だけON
+      // 「暑いのに暖房が入る」を防ぐ — 1人でもreleaseしたらOFF
+      uint8_t interested = relayInterested[i];
+      shouldOn = (interested != 0) && ((relayClaims[i] & interested) == interested);
+    } else {
+      // OR合成: 誰か1人でもON要求 → ON
+      shouldOn = (relayClaims[i] != 0);
+    }
+    bool currentOn = (relayState >> i) & 1;
+    if (shouldOn != currentOn) {
+      setRelay(i + 1, shouldOn);
+    }
+  }
+}
+
 // ============================================================
 // Digital Input
 // ============================================================
@@ -456,6 +559,7 @@ void scanI2CSensors() {
         if (SENSOR_REGISTRY[i].addr == addr) {
           Serial.printf("%s\n", SENSOR_REGISTRY[i].name);
           if (SENSOR_REGISTRY[i].type == SENSOR_SHT40) sht40_detected = true;
+          if (SENSOR_REGISTRY[i].type == SENSOR_SCD41) scd41_detected = true;
           if (SENSOR_REGISTRY[i].type == SENSOR_ADS1110) ads1110_detected = true;
           matched = true;
           break;
@@ -468,6 +572,13 @@ void scanI2CSensors() {
   if (sht40_detected) {
     sht4x.begin(Wire1, 0x44);
     Serial.println("SHT40 initialized");
+  }
+  if (scd41_detected) {
+    scd4x.begin(Wire1, 0x62);
+    scd4x.stopPeriodicMeasurement();
+    delay(500);
+    scd4x.startPeriodicMeasurement();
+    Serial.println("SCD41 initialized (CO2/Temp/Hum)");
   }
   if (ads1110_detected) {
     // Configure: continuous conversion, 8 SPS, PGA gain=1
@@ -497,6 +608,28 @@ void readSensors() {
       sht40_error_count = 0;
       g_sht40_temp = temp;
       g_sht40_hum  = hum;
+    }
+  }
+
+  // SCD41 (I2C)
+  if (scd41_detected) {
+    uint16_t co2; float temp, hum;
+    bool dataReady = false;
+    scd4x.getDataReadyStatus(dataReady);
+    if (dataReady) {
+      uint16_t err = scd4x.readMeasurement(co2, temp, hum);
+      if (err) {
+        scd41_error_count++;
+        if (scd41_error_count >= 5) {
+          scd41_detected = false;
+          Serial.println("SCD41: disabled after 5 errors");
+        }
+      } else {
+        scd41_error_count = 0;
+        g_scd41_co2  = co2;
+        g_scd41_temp = temp;
+        g_scd41_hum  = hum;
+      }
     }
   }
 
@@ -556,17 +689,27 @@ uint16_t modbusCalcCRC(const uint8_t* data, size_t len) {
 }
 
 void initRS485() {
+  // RS485 transceiver on UART1 (GPIO4/5) — kept for future RS485 devices
   Serial2.setTX(RS485_TX);
   Serial2.setRX(RS485_RX);
   Serial2.begin(rs485Baud);
   Serial.printf("RS485: UART1 TX=GPIO%d RX=GPIO%d baud=%d\n", RS485_TX, RS485_RX, rs485Baud);
 
+  // SEN0575: TTL UART via SerialPIO on GPIO44/45 (expansion header)
+  sen0575Serial.begin(9600);
+  Serial.printf("SEN0575: SerialPIO TX=GPIO%d RX=GPIO%d baud=9600\n",
+                SEN0575_TX_PIN, SEN0575_RX_PIN);
+
   delay(100);
-  uint16_t pidH = 0, pidL = 0;
-  if (modbusReadInput(SEN0575_ADDR, SEN0575_REG_PID_H, 2, &pidH, &pidL)) {
-    uint32_t pid = ((uint32_t)pidH << 16) | pidL;
+  // Read PID and VID as separate registers (DFRobot library convention)
+  uint16_t pidReg = 0, vidReg = 0;
+  bool pidOk = modbusReadInput(SEN0575_ADDR, SEN0575_REG_PID, 1, &pidReg, nullptr);
+  delay(50);
+  bool vidOk = modbusReadInput(SEN0575_ADDR, SEN0575_REG_VID, 1, &vidReg, nullptr);
+  if (pidOk && vidOk) {
+    uint32_t pid = ((uint32_t)(vidReg & 0xC000) << 2) | pidReg;
     sen0575_detected = (pid == 0x000100C0);
-    Serial.printf("SEN0575: PID=0x%08lX %s\n", pid,
+    Serial.printf("SEN0575: PID=0x%05lX VID=0x%04X %s\n", pid, vidReg,
                   sen0575_detected ? "DETECTED" : "PID mismatch");
   } else {
     Serial.println("SEN0575: not found");
@@ -588,9 +731,9 @@ bool modbusReadInput(uint8_t addr, uint16_t reg, uint16_t count,
   frame[6] = crc & 0xFF;
   frame[7] = (crc >> 8) & 0xFF;
 
-  while (Serial2.available()) Serial2.read();
-  Serial2.write(frame, 8);
-  Serial2.flush();
+  while (sen0575Serial.available()) sen0575Serial.read();
+  sen0575Serial.write(frame, 8);
+  sen0575Serial.flush();
 
   const int respLen = 3 + count * 2 + 2;
   uint8_t resp[11];
@@ -599,7 +742,7 @@ bool modbusReadInput(uint8_t addr, uint16_t reg, uint16_t count,
   int received = 0;
   unsigned long deadline = millis() + 1000UL;
   while (received < respLen && millis() < deadline) {
-    if (Serial2.available()) resp[received++] = (uint8_t)Serial2.read();
+    if (sen0575Serial.available()) resp[received++] = (uint8_t)sen0575Serial.read();
   }
   if (received < respLen) return false;
 
@@ -615,14 +758,14 @@ bool modbusReadInput(uint8_t addr, uint16_t reg, uint16_t count,
 void pollDrainSensor() {
   if (!sen0575_detected) return;
 
-  uint16_t cumH = 0, cumL = 0;
-  if (modbusReadInput(SEN0575_ADDR, SEN0575_REG_CUMRAIN_H, 2, &cumH, &cumL)) {
+  uint16_t cumL = 0, cumH = 0;
+  if (modbusReadInput(SEN0575_ADDR, SEN0575_REG_CUMRAIN_L, 2, &cumL, &cumH)) {
     sen0575_cumRainRaw = ((uint32_t)cumH << 16) | cumL;
   }
   delay(50);
 
-  uint16_t rawH = 0, rawL = 0;
-  if (modbusReadInput(SEN0575_ADDR, SEN0575_REG_RAWDATA_H, 2, &rawH, &rawL)) {
+  uint16_t rawL = 0, rawH = 0;
+  if (modbusReadInput(SEN0575_ADDR, SEN0575_REG_RAWDATA_L, 2, &rawL, &rawH)) {
     sen0575_rawTips = ((uint32_t)rawH << 16) | rawL;
   }
   delay(50);
@@ -728,6 +871,16 @@ void ccmSendStates() {
     char rainBuf[12];
     dtostrf(rainfall_mm, 1, 2, rainBuf);
     xml += rainBuf;
+    xml += "</DATA>";
+  }
+
+  // SCD41 CO2
+  if (scd41_detected && g_scd41_co2 > 0) {
+    int room = (ccmMap[0].ccmType[0] != '\0') ? ccmMap[0].room : 2;
+    xml += "<DATA type=\"InAirCO2.cMC\" room=\"";
+    xml += room;
+    xml += "\" region=\"11\" order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
+    xml += g_scd41_co2;
     xml += "</DATA>";
   }
 
@@ -841,9 +994,9 @@ void ccmReceive() {
 
       lastCcmRx[ch] = millis();
       if (ival > 0) {
-        setRelay(ch + 1, true);
+        claimRelay(ch + 1, OWN_CCM);
       } else {
-        setRelay(ch + 1, false);
+        releaseRelay(ch + 1, OWN_CCM);
       }
       Serial.printf("CCM RX: %s room=%d → CH%d = %d\n", type, room, ch + 1, ival);
       break;
@@ -1050,7 +1203,8 @@ void greenhouseControl(unsigned long now) {
     bool shouldBeOn = (duty > 0.01) && (elapsed < onDur);
 
     if (shouldBeOn != ghRun[i].active) {
-      setRelay(ch + 1, shouldBeOn);
+      if (shouldBeOn) claimRelay(ch + 1, OWN_GH);
+      else            releaseRelay(ch + 1, OWN_GH);
       ghRun[i].active = shouldBeOn;
       Serial.printf("[GH] rule%d CH%d %s (%.1fC duty=%.0f%%)\n",
                     i + 1, ch + 1, shouldBeOn ? "ON" : "OFF", temp, duty * 100);
@@ -1063,12 +1217,13 @@ void greenhouseControl(unsigned long now) {
 // ============================================================
 void loadIrrigationConfig() {
   for (int i = 0; i < IRRI_SLOTS; i++) {
-    irriCtrl[i].enabled      = false;
-    irriCtrl[i].relay_ch     = -1;
-    irriCtrl[i].threshold_mj = 0.5;   // 0.5 MJ/m² default
-    irriCtrl[i].duration_sec = 120;    // 2分 default
-    irriCtrl[i].min_wm2      = 50.0;  // 50 W/m² 未満は積算しない
-    irriRun[i] = {0.0, false, 0, 0, 0};
+    irriCtrl[i].enabled        = false;
+    irriCtrl[i].relay_ch       = -1;
+    irriCtrl[i].threshold_mj   = 0.5;   // 0.5 MJ/m² default
+    irriCtrl[i].duration_sec   = 120;    // 2分 default
+    irriCtrl[i].min_wm2        = 50.0;  // 50 W/m² 未満は積算しない
+    irriCtrl[i].drain_stop_sec = 0;     // 0=排水停止無効
+    irriRun[i] = {0.0, false, 0, 0, 0, 0, 0};
   }
   if (!LittleFS.exists("/irri_ctrl.json")) return;
   File f = LittleFS.open("/irri_ctrl.json", "r");
@@ -1080,11 +1235,12 @@ void loadIrrigationConfig() {
   int idx = 0;
   for (JsonObject r : arr) {
     if (idx >= IRRI_SLOTS) break;
-    irriCtrl[idx].enabled      = r["enabled"]      | false;
-    irriCtrl[idx].relay_ch     = r["relay_ch"]      | -1;
-    irriCtrl[idx].threshold_mj = r["threshold_mj"]  | 0.5;
-    irriCtrl[idx].duration_sec = r["duration_sec"]  | 120;
-    irriCtrl[idx].min_wm2      = r["min_wm2"]       | 50.0;
+    irriCtrl[idx].enabled        = r["enabled"]        | false;
+    irriCtrl[idx].relay_ch       = r["relay_ch"]        | -1;
+    irriCtrl[idx].threshold_mj   = r["threshold_mj"]    | 0.5;
+    irriCtrl[idx].duration_sec   = r["duration_sec"]    | 120;
+    irriCtrl[idx].min_wm2        = r["min_wm2"]         | 50.0;
+    irriCtrl[idx].drain_stop_sec = r["drain_stop_sec"]  | 0;
     idx++;
   }
   Serial.printf("Irrigation: %d rules loaded\n", idx);
@@ -1095,11 +1251,12 @@ void saveIrrigationConfig() {
   JsonArray arr = doc["rules"].to<JsonArray>();
   for (int i = 0; i < IRRI_SLOTS; i++) {
     JsonObject r = arr.add<JsonObject>();
-    r["enabled"]      = irriCtrl[i].enabled;
-    r["relay_ch"]     = irriCtrl[i].relay_ch;
-    r["threshold_mj"] = irriCtrl[i].threshold_mj;
-    r["duration_sec"] = irriCtrl[i].duration_sec;
-    r["min_wm2"]      = irriCtrl[i].min_wm2;
+    r["enabled"]        = irriCtrl[i].enabled;
+    r["relay_ch"]       = irriCtrl[i].relay_ch;
+    r["threshold_mj"]   = irriCtrl[i].threshold_mj;
+    r["duration_sec"]   = irriCtrl[i].duration_sec;
+    r["min_wm2"]        = irriCtrl[i].min_wm2;
+    r["drain_stop_sec"] = irriCtrl[i].drain_stop_sec;
   }
   File f = LittleFS.open("/irri_ctrl.json", "w");
   if (!f) return;
@@ -1115,14 +1272,35 @@ void irrigationControl(unsigned long now) {
     if (!irriCtrl[i].enabled || irriCtrl[i].relay_ch < 0) continue;
     int ch = irriCtrl[i].relay_ch;
 
-    // 灌水中 → 時間経過で停止
+    // 灌水中 → 時間経過 or 排水検知で停止
     if (irriRun[i].irrigating) {
-      if ((now - irriRun[i].irri_start) >= (unsigned long)irriCtrl[i].duration_sec * 1000UL) {
-        setRelay(ch + 1, false);
+      bool timeUp = (now - irriRun[i].irri_start) >= (unsigned long)irriCtrl[i].duration_sec * 1000UL;
+
+      // 排水検知: SEN0575のtipが増え続けたらdrain_stop_sec後に停止
+      bool drainStop = false;
+      if (sen0575_detected && irriCtrl[i].drain_stop_sec > 0) {
+        if (sen0575_rawTips > irriRun[i].drain_prev_tips) {
+          // tipが増えた → 排水発生中
+          if (irriRun[i].drain_active_since == 0) {
+            irriRun[i].drain_active_since = now;  // 初回検知
+          } else if ((now - irriRun[i].drain_active_since) >= (unsigned long)irriCtrl[i].drain_stop_sec * 1000UL) {
+            drainStop = true;
+          }
+          irriRun[i].drain_prev_tips = sen0575_rawTips;
+        } else {
+          // tipが増えていない → リセット
+          irriRun[i].drain_active_since = 0;
+        }
+      }
+
+      if (timeUp || drainStop) {
+        releaseRelay(ch + 1, OWN_IRRI);
         irriRun[i].irrigating = false;
-        Serial.printf("[IRRI] rule%d CH%d OFF (done, accum=%.3f MJ, count=%d)\n",
-                      i + 1, ch + 1, irriRun[i].accum_mj, irriRun[i].today_count);
-        irriRun[i].accum_mj = 0.0;  // リセット、再積算開始
+        Serial.printf("[IRRI] rule%d CH%d OFF (%s, accum=%.3f MJ, count=%d)\n",
+                      i + 1, ch + 1, drainStop ? "drain_stop" : "done",
+                      irriRun[i].accum_mj, irriRun[i].today_count);
+        irriRun[i].accum_mj = 0.0;
+        irriRun[i].drain_active_since = 0;
       }
       continue;  // 灌水中は積算しない
     }
@@ -1144,13 +1322,99 @@ void irrigationControl(unsigned long now) {
 
     // 閾値到達 → 灌水開始
     if (irriRun[i].accum_mj >= irriCtrl[i].threshold_mj) {
-      setRelay(ch + 1, true);
+      claimRelay(ch + 1, OWN_IRRI);
       irriRun[i].irrigating = true;
       irriRun[i].irri_start = now;
       irriRun[i].today_count++;
       Serial.printf("[IRRI] rule%d CH%d ON (accum=%.3f MJ >= %.3f, #%d)\n",
                     i + 1, ch + 1, irriRun[i].accum_mj,
                     irriCtrl[i].threshold_mj, irriRun[i].today_count);
+    }
+  }
+}
+
+// ============================================================
+// CO2 Guard — Config & Logic
+// ============================================================
+void loadCO2GuardConfig() {
+  co2Guard.enabled = false;
+  co2Guard.threshold_ppm = 200;
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    co2Guard.actions[i].relay_ch = -1;
+    co2Guard.actions[i].duration_sec = 60;
+  }
+  if (!LittleFS.exists("/co2_guard.json")) return;
+  File f = LittleFS.open("/co2_guard.json", "r");
+  if (!f) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, f)) { f.close(); return; }
+  f.close();
+  co2Guard.enabled = doc["enabled"] | false;
+  co2Guard.threshold_ppm = doc["threshold_ppm"] | 200;
+  JsonArray arr = doc["actions"].as<JsonArray>();
+  int idx = 0;
+  for (JsonObject a : arr) {
+    if (idx >= CO2_GUARD_ACTIONS) break;
+    co2Guard.actions[idx].relay_ch = a["relay_ch"] | -1;
+    co2Guard.actions[idx].duration_sec = a["duration_sec"] | 60;
+    idx++;
+  }
+  Serial.printf("CO2Guard: threshold=%dppm, %d actions\n", co2Guard.threshold_ppm, idx);
+}
+
+void saveCO2GuardConfig() {
+  JsonDocument doc;
+  doc["enabled"] = co2Guard.enabled;
+  doc["threshold_ppm"] = co2Guard.threshold_ppm;
+  JsonArray arr = doc["actions"].to<JsonArray>();
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    JsonObject a = arr.add<JsonObject>();
+    a["relay_ch"] = co2Guard.actions[i].relay_ch;
+    a["duration_sec"] = co2Guard.actions[i].duration_sec;
+  }
+  File f = LittleFS.open("/co2_guard.json", "w");
+  if (!f) return;
+  serializeJson(doc, f);
+  f.close();
+}
+
+void co2GuardControl(unsigned long now) {
+  if (!co2Guard.enabled || !scd41_detected || g_scd41_co2 == 0) return;
+
+  bool belowThreshold = (g_scd41_co2 <= co2Guard.threshold_ppm);
+
+  if (belowThreshold && !co2Run.active) {
+    // 発動: 全アクションのリレーをON
+    co2Run.active = true;
+    Serial.printf("[CO2] Guard triggered: %dppm <= %dppm\n",
+                  g_scd41_co2, co2Guard.threshold_ppm);
+    for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+      if (co2Guard.actions[i].relay_ch >= 0 && co2Guard.actions[i].duration_sec > 0) {
+        claimRelay(co2Guard.actions[i].relay_ch + 1, OWN_CO2);
+        co2Run.action_start[i] = now;
+        co2Run.action_on[i] = true;
+        Serial.printf("[CO2] CH%d ON for %ds\n",
+                      co2Guard.actions[i].relay_ch + 1, co2Guard.actions[i].duration_sec);
+      }
+    }
+  }
+
+  if (co2Run.active) {
+    // 各アクションを個別にタイマー管理
+    bool anyOn = false;
+    for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+      if (!co2Run.action_on[i]) continue;
+      if ((now - co2Run.action_start[i]) >= (unsigned long)co2Guard.actions[i].duration_sec * 1000UL) {
+        releaseRelay(co2Guard.actions[i].relay_ch + 1, OWN_CO2);
+        co2Run.action_on[i] = false;
+        Serial.printf("[CO2] CH%d OFF (timer done)\n", co2Guard.actions[i].relay_ch + 1);
+      } else {
+        anyOn = true;
+      }
+    }
+    if (!anyOn) {
+      co2Run.active = false;
+      Serial.println("[CO2] Guard complete");
     }
   }
 }
@@ -1277,18 +1541,18 @@ void dewPreventionControl(unsigned long now) {
   if (inWindow && !dewRun.active) {
     dewRun.active = true;
     if (dewCtrl.fan_relay_ch >= 0 && dewCtrl.fan_relay_ch <= 7)
-      setRelay(dewCtrl.fan_relay_ch + 1, true);
+      claimRelay(dewCtrl.fan_relay_ch + 1, OWN_DEW);
     if (dewCtrl.heater_relay_ch >= 0 && dewCtrl.heater_relay_ch <= 7)
-      setRelay(dewCtrl.heater_relay_ch + 1, true);
+      claimRelay(dewCtrl.heater_relay_ch + 1, OWN_DEW);
     Serial.printf("[DEW] ON — sunrise=%d:%02d now=%d:%02d\n",
                   dewRun.sunrise_min / 60, dewRun.sunrise_min % 60,
                   localMin / 60, localMin % 60);
   } else if (!inWindow && dewRun.active) {
     dewRun.active = false;
     if (dewCtrl.fan_relay_ch >= 0 && dewCtrl.fan_relay_ch <= 7)
-      setRelay(dewCtrl.fan_relay_ch + 1, false);
+      releaseRelay(dewCtrl.fan_relay_ch + 1, OWN_DEW);
     if (dewCtrl.heater_relay_ch >= 0 && dewCtrl.heater_relay_ch <= 7)
-      setRelay(dewCtrl.heater_relay_ch + 1, false);
+      releaseRelay(dewCtrl.heater_relay_ch + 1, OWN_DEW);
     Serial.printf("[DEW] OFF — window ended\n");
   }
 }
@@ -1358,7 +1622,7 @@ void tempRateGuardControl(unsigned long now) {
   if (!rateRun.active && rateRun.current_rate >= rateGuard.rate_threshold) {
     rateRun.active = true;
     rateRun.active_since = now;
-    setRelay(rateGuard.fan_relay_ch + 1, true);
+    claimRelay(rateGuard.fan_relay_ch + 1, OWN_RATE);
     Serial.printf("[RATE] ON — %.2f℃/min >= %.1f threshold\n",
                   rateRun.current_rate, rateGuard.rate_threshold);
   }
@@ -1369,7 +1633,7 @@ void tempRateGuardControl(unsigned long now) {
     bool rateLow  = rateRun.current_rate < rateGuard.rate_threshold;
     if (holdDone && rateLow) {
       rateRun.active = false;
-      setRelay(rateGuard.fan_relay_ch + 1, false);
+      releaseRelay(rateGuard.fan_relay_ch + 1, OWN_RATE);
       Serial.printf("[RATE] OFF — rate=%.2f℃/min, hold done\n", rateRun.current_rate);
     }
   }
@@ -1537,10 +1801,10 @@ function load(){
     var solVal=(d.sensor&&d.sensor.solar_wm2!==null)?' '+d.sensor.solar_wm2.toFixed(0)+'W/m&sup2;':'';
     document.getElementById('devstat').innerHTML=
       '<h3>Device Status</h3>'+
-      '<b>I2C:</b> '+(d.sht40_ok?'<span class=on>SHT40</span>':'<span class=off>none</span>')+
+      '<b>I2C:</b> '+(d.sht40_ok?'<span class=on>SHT40</span>':'')+(d.scd41_ok?' <span class=on>SCD41</span>':'')+((!d.sht40_ok&&!d.scd41_ok)?'<span class=off>none</span>':'')+
       ' | <b>Solar:</b> '+solSrc+solVal+
       ' | <b>1-Wire:</b> '+(d.ds18b20_ok?'<span class=on>DS18B20</span>':'<span class=off>none</span>')+
-      ' | <b>RS485:</b> '+(d.sen0575_ok?'<span class=on>SEN0575</span>':'<span class=off>none</span>');
+      ' | <b>UART:</b> '+(d.sen0575_ok?'<span class=on>SEN0575</span>':'<span class=off>none</span>');
     var rt='';
     var ccm=d.ccm_map||[];
     for(var i=0;i<8;i++){
@@ -1566,7 +1830,8 @@ function load(){
     if(d.sensor&&d.sensor.hum!==null)sv+='<b>Hum:</b> '+d.sensor.hum.toFixed(1)+'% ';
     if(d.sensor&&d.sensor.ds18b20_temp!==null)sv+='<b>DS18B20:</b> '+d.sensor.ds18b20_temp.toFixed(1)+'C ';
     if(d.sensor&&d.sensor.solar_wm2!==null)sv+='<b>Solar:</b> '+d.sensor.solar_wm2.toFixed(1)+' W/m&sup2; ';
-    if(d.sensor&&d.sensor.temp===null&&d.sensor.hum===null&&d.sensor.ds18b20_temp===null&&d.sensor.solar_wm2===null)sv+='<span class=off>No sensors</span>';
+    if(d.sensor&&d.sensor.co2!==undefined)sv+='<b>CO2:</b> '+d.sensor.co2+'ppm <b>SCD41:</b> '+d.sensor.scd41_temp.toFixed(1)+'C '+d.sensor.scd41_hum.toFixed(1)+'% ';
+    if(d.sensor&&d.sensor.temp===null&&d.sensor.hum===null&&d.sensor.ds18b20_temp===null&&d.sensor.solar_wm2===null&&d.sensor.co2===undefined)sv+='<span class=off>No sensors</span>';
     document.getElementById('sens').innerHTML=sv;
     var gh=d.greenhouse||[];
     var anyGh=false;
@@ -1647,6 +1912,12 @@ void sendAPIState(WiFiClient& client) {
   doc["ts"]         = getCurrentEpoch();
   doc["relay_state"] = relayState;
 
+  // Relay claims (arbitration debug)
+  JsonArray claimsArr = doc["relay_claims"].to<JsonArray>();
+  for (int i = 0; i < 8; i++) {
+    claimsArr.add(relayClaims[i]);
+  }
+
   // DI as bitmask
   uint8_t diBits = 0;
   for (int i = 0; i < 8; i++) {
@@ -1677,6 +1948,11 @@ void sendAPIState(WiFiClient& client) {
   else                         sensor["ds18b20_temp"] = nullptr;
   if (!isnan(g_solar_wm2)) sensor["solar_wm2"] = round(g_solar_wm2 * 10) / 10.0;
   else                      sensor["solar_wm2"] = nullptr;
+  if (scd41_detected && g_scd41_co2 > 0) {
+    sensor["co2"]       = g_scd41_co2;
+    sensor["scd41_temp"] = round(g_scd41_temp * 10) / 10.0;
+    sensor["scd41_hum"]  = round(g_scd41_hum * 10) / 10.0;
+  }
 
   // Network
   doc["ip"]      = eth.localIP().toString();
@@ -1684,6 +1960,7 @@ void sendAPIState(WiFiClient& client) {
   doc["gateway"] = eth.gatewayIP().toString();
   doc["dns"]     = eth.dnsIP().toString();
   doc["sht40_ok"]    = sht40_detected;
+  doc["scd41_ok"]    = scd41_detected;
   doc["ds18b20_ok"]  = ds18b20_detected;
   doc["sen0575_ok"]  = sen0575_detected;
   doc["ads1110_ok"]  = ads1110_detected;
@@ -1721,14 +1998,15 @@ void sendAPIState(WiFiClient& client) {
   JsonArray irriArr = doc["irrigation"].to<JsonArray>();
   for (int i = 0; i < IRRI_SLOTS; i++) {
     JsonObject ir = irriArr.add<JsonObject>();
-    ir["enabled"]      = irriCtrl[i].enabled;
-    ir["relay_ch"]     = irriCtrl[i].relay_ch;
-    ir["threshold_mj"] = irriCtrl[i].threshold_mj;
-    ir["duration_sec"] = irriCtrl[i].duration_sec;
-    ir["min_wm2"]      = irriCtrl[i].min_wm2;
-    ir["accum_mj"]     = round(irriRun[i].accum_mj * 1000) / 1000.0;
-    ir["irrigating"]   = irriRun[i].irrigating;
-    ir["today_count"]  = irriRun[i].today_count;
+    ir["enabled"]        = irriCtrl[i].enabled;
+    ir["relay_ch"]       = irriCtrl[i].relay_ch;
+    ir["threshold_mj"]   = irriCtrl[i].threshold_mj;
+    ir["duration_sec"]   = irriCtrl[i].duration_sec;
+    ir["min_wm2"]        = irriCtrl[i].min_wm2;
+    ir["drain_stop_sec"] = irriCtrl[i].drain_stop_sec;
+    ir["accum_mj"]       = round(irriRun[i].accum_mj * 1000) / 1000.0;
+    ir["irrigating"]     = irriRun[i].irrigating;
+    ir["today_count"]    = irriRun[i].today_count;
     if (irriRun[i].irrigating) {
       ir["remaining_sec"] = irriCtrl[i].duration_sec -
         (int)((millis() - irriRun[i].irri_start) / 1000);
@@ -1751,6 +2029,10 @@ void sendAPIState(WiFiClient& client) {
     rate["active"]  = rateRun.active;
     if (!isnan(rateRun.prev_temp)) rate["current_rate"] = round(rateRun.current_rate * 100) / 100.0;
     else rate["current_rate"] = nullptr;
+    JsonObject co2g = prot["co2"].to<JsonObject>();
+    co2g["enabled"] = co2Guard.enabled;
+    co2g["threshold_ppm"] = co2Guard.threshold_ppm;
+    co2g["active"] = co2Run.active;
   }
 
   char buffer[4096];
@@ -1820,8 +2102,8 @@ void handleRelayPost(WiFiClient& client, int ch, const String& body) {
   }
 
   int value = doc["value"] | -1;
-  if (value == 1) setRelay(ch, true);
-  else if (value == 0) setRelay(ch, false);
+  if (value == 1) claimRelay(ch, OWN_MANUAL);
+  else if (value == 0) releaseRelay(ch, OWN_MANUAL);
 
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: application/json");
@@ -2259,7 +2541,7 @@ void sendIrrigationPage(WiFiClient& client) {
   // Config form
   client.println("<h3>Settings</h3>");
   client.println("<form method=POST action=/api/irrigation>");
-  client.println("<table><tr><th>Rule</th><th>Enable</th><th>Relay CH</th><th>Threshold(MJ/m&sup2;)</th><th>Duration(s)</th><th>Min W/m&sup2;</th></tr>");
+  client.println("<table><tr><th>Rule</th><th>Enable</th><th>Relay CH</th><th>Threshold(MJ/m&sup2;)</th><th>Duration(s)</th><th>Min W/m&sup2;</th><th>Drain Stop(s)</th></tr>");
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><input type=checkbox name=en%d value=1%s></td>", i, irriCtrl[i].enabled ? " checked" : "");
@@ -2271,14 +2553,16 @@ void sendIrrigationPage(WiFiClient& client) {
     client.printf("</select></td>");
     client.printf("<td><input type=number name=th%d value=%.3f min=0.01 max=10 step=0.01></td>", i, irriCtrl[i].threshold_mj);
     client.printf("<td><input type=number name=du%d value=%d min=10 max=3600></td>", i, irriCtrl[i].duration_sec);
-    client.printf("<td><input type=number name=mw%d value=%.0f min=0 max=500 step=10></td></tr>", i, irriCtrl[i].min_wm2);
+    client.printf("<td><input type=number name=mw%d value=%.0f min=0 max=500 step=10></td>", i, irriCtrl[i].min_wm2);
+    client.printf("<td><input type=number name=ds%d value=%d min=0 max=300 step=5></td></tr>", i, irriCtrl[i].drain_stop_sec);
   }
   client.println("</table>");
   client.println("<input type=submit value='Save'>");
   client.println("</form>");
   client.println("<p class=note>Threshold: accumulated solar energy to trigger irrigation (typical: 0.3-1.0 MJ/m&sup2;).<br>");
   client.println("Duration: how long irrigation runs per trigger.<br>");
-  client.println("Min W/m&sup2;: ignore solar readings below this (nighttime noise filter, default 50).</p>");
+  client.println("Min W/m&sup2;: ignore solar readings below this (nighttime noise filter, default 50).<br>");
+  client.println("Drain Stop: stop irrigation if SEN0575 detects drain flow for N seconds (0=disabled, requires SEN0575).</p>");
 
   // Auto-refresh JS
   client.println("<script>");
@@ -2348,9 +2632,13 @@ void handleIrrigationPost(WiFiClient& client, const String& body) {
     String mw = getField(String("mw") + i);
     if (mw.length() > 0) irriCtrl[i].min_wm2 = mw.toFloat();
 
+    String ds = getField(String("ds") + i);
+    if (ds.length() > 0) irriCtrl[i].drain_stop_sec = ds.toInt();
+
     // Reset runtime on config change
     irriRun[i].accum_mj = 0.0;
     irriRun[i].last_sample = 0;
+    irriRun[i].drain_active_since = 0;
   }
 
   saveIrrigationConfig();
@@ -2436,6 +2724,24 @@ void sendProtectionPage(WiFiClient& client) {
   client.printf("<tr><th>Hold time (s)</th><td><input type=number name=rhld value=%d min=30 max=600></td></tr>\n", rateGuard.hold_sec);
   client.println("</table></fieldset>");
 
+  // CO2 Guard
+  client.println("<fieldset><legend>CO2 Guard (requires SCD41)</legend>");
+  client.println("<table>");
+  client.printf("<tr><th>Enable</th><td><input type=checkbox name=co2_en value=1%s></td></tr>\n", co2Guard.enabled ? " checked" : "");
+  client.printf("<tr><th>Threshold (ppm)</th><td><input type=number name=co2thr value=%d min=50 max=1000></td></tr>\n", co2Guard.threshold_ppm);
+  client.println("</table>");
+  client.println("<p class=note>Actions: when CO2 &le; threshold, each relay turns ON for its own duration.</p>");
+  client.println("<table><tr><th>#</th><th>Relay CH</th><th>Duration(s)</th></tr>");
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    client.printf("<tr><td>%d</td><td><select name=ca%d>", i + 1, i);
+    client.printf("<option value=-1%s>-</option>", co2Guard.actions[i].relay_ch < 0 ? " selected" : "");
+    for (int c = 0; c < 8; c++)
+      client.printf("<option value=%d%s>CH%d</option>", c, co2Guard.actions[i].relay_ch == c ? " selected" : "", c + 1);
+    client.printf("</select></td>");
+    client.printf("<td><input type=number name=cd%d value=%d min=10 max=7200></td></tr>\n", i, co2Guard.actions[i].duration_sec);
+  }
+  client.println("</table></fieldset>");
+
   client.println("<input type=submit value='Save All'>");
   client.println("</form>");
 
@@ -2453,6 +2759,10 @@ void sendProtectionPage(WiFiClient& client) {
   client.println("  s+='<b>Rate Guard:</b> '+(rt.enabled?'<span class=on>Enabled</span>':'<span class=off>Disabled</span>');");
   client.println("  if(rt.current_rate!==null)s+=' | <b>Rate:</b> '+rt.current_rate.toFixed(2)+' C/min';");
   client.println("  s+=' | <b>State:</b> '+(rt.active?'<span class=on>ACTIVE</span>':'<span class=off>Normal</span>');}");
+  client.println("if(p.co2){var c2=p.co2;s+='<br>';");
+  client.println("  s+='<b>CO2 Guard:</b> '+(c2.enabled?'<span class=on>Enabled</span>':'<span class=off>Disabled</span>');");
+  client.println("  s+=' | <b>Threshold:</b> '+c2.threshold_ppm+'ppm';");
+  client.println("  s+=' | <b>State:</b> '+(c2.active?'<span class=on>ACTIVE</span>':'<span class=off>Normal</span>');}");
   client.println("document.getElementById('pstat').innerHTML=s;");
   client.println("});}");
   client.println("pLoad();setInterval(pLoad,3000);");
@@ -2491,13 +2801,23 @@ void handleProtectionPost(WiFiClient& client, const String& body) {
   String rf = getField("rfan"); if (rf.length() > 0) rateGuard.fan_relay_ch = rf.toInt();
   String rh = getField("rhld"); if (rh.length() > 0) rateGuard.hold_sec = rh.toInt();
 
+  // CO2 Guard
+  co2Guard.enabled = (getField("co2_en") == "1");
+  String co2t = getField("co2thr"); if (co2t.length() > 0) co2Guard.threshold_ppm = co2t.toInt();
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    String ca = getField(String("ca") + i); if (ca.length() > 0) co2Guard.actions[i].relay_ch = ca.toInt();
+    String cd = getField(String("cd") + i); if (cd.length() > 0) co2Guard.actions[i].duration_sec = cd.toInt();
+  }
+
   // Reset runtimes
   dewRun.last_calc_day = -1;  // force recalc
   dewRun.active = false;
   rateRun = {NAN, 0, 0.0, false, 0};
+  co2Run = {};
 
   saveDewConfig();
   saveRateGuardConfig();
+  saveCO2GuardConfig();
 
   client.println("HTTP/1.1 303 See Other");
   client.println("Location: /protection");
@@ -2750,6 +3070,7 @@ void setup() {
   loadCcmMapping();
   loadGreenhouseConfig();
   loadIrrigationConfig();
+  loadCO2GuardConfig();
   loadDewConfig();
   loadRateGuardConfig();
 
@@ -2836,24 +3157,24 @@ void loop() {
   // CCM receive (non-blocking)
   ccmReceive();
 
-  // Duration auto-off
+  // Duration auto-off (manual timer)
   unsigned long now = millis();
   for (int i = 0; i < 8; i++) {
     if (relayDurationEnd[i] > 0 && now >= relayDurationEnd[i]) {
-      setRelay(i + 1, false);
+      releaseRelay(i + 1, OWN_MANUAL);
       relayDurationEnd[i] = 0;
       Serial.printf("CH%d auto-OFF\n", i + 1);
     }
   }
 
-  // CCM watchdog: 無通信タイマーでリレー強制OFF
+  // CCM watchdog: 無通信タイマーでCCM claim取り下げ
   for (int i = 0; i < 8; i++) {
     if (ccmMap[i].watchdog_sec > 0 && lastCcmRx[i] > 0 &&
-        (relayState & (1 << i)) &&
+        (relayClaims[i] & (1 << OWN_CCM)) &&
         (now - lastCcmRx[i]) >= (unsigned long)ccmMap[i].watchdog_sec * 1000UL) {
-      setRelay(i + 1, false);
+      releaseRelay(i + 1, OWN_CCM);
       lastCcmRx[i] = 0;
-      Serial.printf("[WATCHDOG] CH%d OFF — no CCM for %ds\n", i + 1, ccmMap[i].watchdog_sec);
+      Serial.printf("[WATCHDOG] CH%d CCM released — no CCM for %ds\n", i + 1, ccmMap[i].watchdog_sec);
     }
   }
 
@@ -2867,13 +3188,11 @@ void loop() {
         if (ccmMap[i].di_link < 0 || ccmMap[i].di_link > 7) continue;
         bool di_on = diState[ccmMap[i].di_link];
         bool target = ccmMap[i].di_invert ? !di_on : di_on;
-        bool current = (relayState >> i) & 1;
-        if (target != current) {
-          setRelay(i + 1, target);
-          Serial.printf("[DI-LINK] DI%d=%s → CH%d %s\n",
-                        ccmMap[i].di_link + 1, di_on ? "ON" : "OFF",
-                        i + 1, target ? "ON" : "OFF");
-        }
+        if (target) claimRelay(i + 1, OWN_MANUAL);
+        else        releaseRelay(i + 1, OWN_MANUAL);
+        Serial.printf("[DI-LINK] DI%d=%s → CH%d %s\n",
+                      ccmMap[i].di_link + 1, di_on ? "ON" : "OFF",
+                      i + 1, target ? "ON" : "OFF");
       }
     }
   }
@@ -2902,6 +3221,12 @@ void loop() {
 
   // Temperature rate guard
   tempRateGuardControl(now);
+
+  // CO2 guard
+  co2GuardControl(now);
+
+  // Relay arbitration: claims → physical output
+  resolveAllRelays();
 
   // NTP re-sync
   static unsigned long lastNtpSync = 0;

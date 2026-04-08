@@ -2,9 +2,7 @@
 
 Arduino firmware for **Waveshare RP2350-ETH-8DI-8RO / RP2350-POE-ETH-8DI-8RO**.
 
-8chリレー + 日射比例灌水 + 結露対策 + 温度制御。ArSprout (UECS-CCM) 連携対応、**スタンドアロンでも動作**。
-
-> Firmware file: `ccm_rp2350_relay.ino` (将来 agri-relay にリネーム予定)
+8chリレー + 日射比例灌水 + 排水検知停止 + 結露防止 + 急昇温ガード + CO2ガード + リレー調停レイヤー。ArSprout (UECS-CCM) 連携対応、**スタンドアロンでも動作**。
 
 ### ボード購入先
 
@@ -21,23 +19,30 @@ Arduino firmware for **Waveshare RP2350-ETH-8DI-8RO / RP2350-POE-ETH-8DI-8RO**.
 | 8ch リレー制御 | GPIO17-24 直接制御 |
 | 8ch デジタル入力 | GPIO9-16, フォトカプラ絶縁, アクティブLOW, 割り込み検知 |
 | DI→リレー連動 | ch毎にDI紐付け、反転モード対応（フロートスイッチ→灌水停止等） |
+| **リレー調停レイヤー** | 7制御者のclaim/release → OR合成(換気系) / AND合成(暖房系) |
 | 無通信ウォッチドッグ | CCM受信途絶でリレー強制OFF (ch別、デフォルト60秒) |
 | 通信 | **UECS-CCM** (UDP multicast 224.0.0.1:16520) |
 | CCMマッピング | WebUI `/ccm` で ch⇔CCMタイプ/Room/Region/Order を設定 + Bulk Set |
 | CCM送信 | リレー状態 + センサー値をCCM XMLでbroadcast (10秒間隔) |
 | CCM受信 | type+room+region+orderマッチでリレー制御 (priority考慮) |
 | I2Cセンサー | SHT40 自動検出 → InAirTemp/InAirHumid としてCCM送信 |
+| **CO2センサー** | SCD41 (I2C 0x62) → InAirCO2 としてCCM送信 |
 | 日射センサー | PVSS-03 + M5Stack ADC Unit (ADS1110 I2C) → InRadiation としてCCM送信 |
 | 日射比例灌水 | 積算日射量(MJ/m²)閾値で灌水リレー自動ON/OFF (2ルール対応) |
+| **排水検知灌水停止** | SEN0575で連続排水N秒検知 → 灌水強制OFF |
 | 1-Wire温度 | DS18B20 (GPIO3) 自動検出 → InAirTemp region=12 としてCCM送信 |
-| RS485排水センサー | DFRobot SEN0575 → WRainfallAmt としてCCM送信 |
-| WebUI | ダッシュボード + CCMマッピング + Greenhouse + Irrigation + OTA |
+| **雨量/排水センサー** | DFRobot SEN0575 (TTL UART, GPIO44/45 SerialPIO) → WRainfallAmt としてCCM送信 |
+| **温室温度制御** | 温度比例デューティ制御 (4ルール、SHT40/DS18B20選択) |
+| **結露防止** | 日の出前後の時間帯にファン+暖房を自動ON (緯度経度から日の出計算) |
+| **急昇温ガード** | 温度上昇率が閾値超過でファンON (保持時間付き) |
+| **CO2ガード** | CO2低下時に複数リレーを個別時間で同時発動 (側窓+ファン+暖房等) |
+| WebUI | ダッシュボード + CCMマッピング + Greenhouse + Irrigation + Protection + OTA |
 | OTA更新 | WebUI `/ota` からブラウザ経由でFW書き込み（10台超の運用に対応） |
 | RGB LED | WS2812 (GPIO2) 状態表示: 緑=正常 / 黄=リレー稼働 / 赤=Ethernet断 |
 | USB-UARTデバッグ | `status` / `help` / `reboot` コマンド対応 |
 | mDNS | `{hostname}.local` |
 | Watchdog 3段 | HW WDT 8s / SW WDT / 定期リブート 10分 |
-| 設定永続化 | LittleFS /config.json + /ccm_map.json + /gh_ctrl.json + /irri_ctrl.json |
+| 設定永続化 | LittleFS /config.json + /ccm_map.json + /gh_ctrl.json + /irri_ctrl.json + /co2_ctrl.json + /dew_ctrl.json + /rate_ctrl.json |
 
 ---
 
@@ -69,6 +74,7 @@ Arduino firmware for **Waveshare RP2350-ETH-8DI-8RO / RP2350-POE-ETH-8DI-8RO**.
 | ArduinoJson | v7.x | JSON設定・API |
 | NTPClient | 3.2.1 | 時刻同期 |
 | SensirionI2cSht4x | latest | SHT40温湿度 (optional) |
+| SensirionI2cScd4x | 0.4+ | SCD41 CO2 (optional) |
 | Adafruit NeoPixel | 1.15+ | WS2812 RGB LED |
 | OneWire | 2.3.8 | DS18B20 (optional) |
 | DallasTemperature | 4.0+ | DS18B20 (optional) |
@@ -112,18 +118,20 @@ curl --data-binary @/tmp/ccm_ota/ccm_rp2350_relay.ino.bin \
 
 | パス | メソッド | 説明 |
 |------|---------|------|
-| `/` | GET | ダッシュボード (リレー+DI+センサー+Greenhouse+Irrigation) |
+| `/` | GET | ダッシュボード (リレー+DI+センサー+Greenhouse+Irrigation+CO2) |
 | `/config` | GET | ネットワーク設定 (IP/mDNS) |
 | `/ccm` | GET | CCMマッピング設定 (Bulk Set / DI連動 / WDTタイマー) |
 | `/greenhouse` | GET | 温度比例制御設定 (4ルール) |
-| `/irrigation` | GET | 日射比例灌水設定 (2ルール) |
+| `/irrigation` | GET | 日射比例灌水設定 (2ルール、排水停止秒数含む) |
+| `/protection` | GET | 結露防止 + 急昇温ガード + CO2ガード設定 |
 | `/ota` | GET | FW更新ページ (ブラウザからbin選択→アップロード→自動リブート) |
-| `/api/state` | GET | 状態JSON (リレー/DI/センサー/CCM/Greenhouse/Irrigation) |
+| `/api/state` | GET | 状態JSON (リレー/DI/センサー/CCM/claims/Greenhouse/Irrigation/CO2) |
 | `/api/config` | GET | ネットワーク設定JSON |
 | `/api/config` | POST | ネットワーク設定保存 → リブート |
 | `/api/ccm` | POST | CCMマッピング保存 (リブート不要) |
 | `/api/greenhouse` | POST | Greenhouse制御設定保存 |
 | `/api/irrigation` | POST | Irrigation制御設定保存 |
+| `/api/protection` | POST | 結露防止/急昇温ガード/CO2ガード設定保存 |
 | `/api/relay/{ch}` | POST | リレー手動制御 |
 | `/api/ota` | POST | FWバイナリ受信 → フラッシュ → リブート |
 
@@ -134,11 +142,14 @@ curl --data-binary @/tmp/ccm_ota/ccm_rp2350_relay.ino.bin \
 | センサー | インターフェース | GPIO | CCM送信 | 備考 |
 |---------|----------------|------|---------|------|
 | SHT40 | I2C1 (Grove) | 6/7 | InAirTemp, InAirHumid | 自動検出 |
+| SCD41 | I2C1 (Grove) | 6/7 | InAirCO2 | CO2/温度/湿度。自動検出。5秒間隔 |
 | PVSS-03 + ADS1110 | I2C1 (Grove) | 6/7 | InRadiation | M5Stack ADC Unit V1.1経由。0-1V=0-1000W/m² |
 | DS18B20 | 1-Wire | 3 | InAirTemp (region=12) | Grove基板から引出し |
-| SEN0575 | RS485 (Modbus RTU) | 4/5 | WRainfallAmt | 排水センサー |
+| SEN0575 | TTL UART (SerialPIO) | 44/45 | WRainfallAmt | 排水/雨量センサー。Modbus RTU 9600bps |
 
 センサーは全て **自動検出**。未接続でも正常動作する。
+
+> **SEN0575接続注意**: RS485端子(GPIO4/5)ではなく、拡張ヘッダのGPIO44/45にTTL UART接続。ボード上のI2C/UARTスイッチをUART側にすること。
 
 ---
 
@@ -146,13 +157,14 @@ curl --data-binary @/tmp/ccm_ota/ccm_rp2350_relay.ino.bin \
 
 WebUI `/irrigation` ページで設定。M5Stack ADC Unit V1.1 (ADS1110) + PVSS-03日射センサーをGrove I2Cに接続。
 
-**動作**: 日射量を積算 → 閾値(MJ/m²)到達 → 灌水リレーON → 設定秒数後OFF → カウンタリセット → 再積算
+**動作**: 日射量を積算 → 閾値(MJ/m²)到達 → 灌水リレーON → 設定秒数後OFF or 排水検知停止 → カウンタリセット → 再積算
 
 | 設定項目 | デフォルト | 説明 |
 |---------|-----------|------|
 | Threshold | 0.5 MJ/m² | 灌水トリガーの積算日射量 (成長段階で調整) |
 | Duration | 120秒 | 1回の灌水時間 |
 | Min W/m² | 50 | この値未満は積算しない (夜間ノイズ除外) |
+| Drain Stop | 0秒 (無効) | SEN0575で連続排水を検知した秒数で灌水強制OFF |
 
 ### Threshold (積算日射量) の目安
 
@@ -182,6 +194,84 @@ PVSS-03は0W/m²付近でもADCノイズで数W/m²の値が出る。
 - ADS1110未接続でも他機能は正常動作（灌水ルール有効でも安全）
 - 灌水中は積算を停止する（灌水直後に再トリガーしない）
 - WebUI `/irrigation` で積算量・灌水回数・残り秒数をリアルタイム監視可能
+
+---
+
+## リレー調停レイヤー
+
+複数の制御者（温度制御・灌水・結露防止・急昇温ガード・CO2ガード・CCM受信・手動操作）が同じリレーchを操作しうるため、調停レイヤーで衝突を解決する。
+
+各制御者は `claimRelay()` (ON要求) / `releaseRelay()` (取り下げ) でビットを立て、ループ末尾の `resolveAllRelays()` が物理出力を一括確定する。
+
+| 合成ルール | 対象ch | 動作 | 安全側 |
+|-----------|--------|------|--------|
+| **OR合成** | 換気・側窓・ファン等 | 誰か1人でもclaim → ON | 換気不足を防ぐ |
+| **AND合成** | 暖房 (AirHeatBurn / AirHeatHP) | 関与者全員がclaim → ON | 不要な加温を防ぐ |
+
+**例: 20℃ / CO2≤200ppm の場合**
+
+| リレー | 温度制御 | CO2ガード | 合成結果 |
+|--------|---------|----------|---------|
+| 側窓 (OR) | release (涼しい) | claim (CO2低い) | **ON** — CO2確保 |
+| 暖房 (AND) | release (暖房不要) | claim (換気補償) | **OFF** — 暑いのに暖房は入らない |
+
+### 制御者一覧
+
+| ID | 制御者 | ビット |
+|----|--------|-------|
+| OWN_GH | 温室温度制御 | 0 |
+| OWN_IRRI | 灌水 | 1 |
+| OWN_DEW | 結露防止 | 2 |
+| OWN_RATE | 急昇温ガード | 3 |
+| OWN_CO2 | CO2ガード | 4 |
+| OWN_CCM | CCM受信 | 5 |
+| OWN_MANUAL | WebUI手動 / DI連動 | 6 |
+
+`/api/state` の `relay_claims[]` で各chのビットマスクを確認可能。
+
+---
+
+## 結露防止 (Dew Prevention)
+
+日の出前後にファンと暖房を稼働させ、放射冷却による結露を防止する。
+
+| 設定項目 | 説明 |
+|---------|------|
+| Fan Relay CH | ファンのリレーch |
+| Heater Relay CH | 暖房のリレーch |
+| Before Sunrise | 日の出の何分前に開始 |
+| After Sunrise | 日の出の何分後に終了 |
+| Latitude / Longitude | 日の出計算用の緯度経度 |
+
+日の出時刻は緯度経度から毎日自動計算。NTP時刻と組み合わせて判定。
+
+---
+
+## 急昇温ガード (Temperature Rate Guard)
+
+急激な温度上昇（℃/分）を検知し、換気扇を強制起動する。
+
+| 設定項目 | デフォルト | 説明 |
+|---------|-----------|------|
+| Rate Threshold | 2.0 ℃/min | この変化率以上でファンON |
+| Fan Relay CH | -1 | 換気扇のリレーch |
+| Sensor Source | SHT40 | SHT40 or DS18B20 |
+| Hold Time | 120秒 | 変化率が閾値未満に戻ってからOFFまでの保持時間 |
+
+---
+
+## CO2ガード
+
+CO2濃度が閾値以下になると、複数のリレーを個別の稼働時間で同時発動する。
+
+| 設定項目 | 説明 |
+|---------|------|
+| Threshold | CO2閾値 (ppm) — これ以下で発動 |
+| Action 1-4 | 各アクションごとにリレーchと稼働秒数を設定 |
+
+**使用例**: CO2≤200ppm → 側窓1(300秒) + 側窓2(300秒) + ファン(600秒) + 暖房(180秒)
+
+各アクションは独立したタイマーで管理され、設定秒数経過後に個別にOFFになる。全アクション完了後に再トリガー可能。
 
 ---
 
@@ -259,15 +349,20 @@ Room=2（ArSprout=Room 1との共存）、Order=CH番号。
 - [x] WebUI 全ページ動作確認
 - [x] OTA更新 動作確認 (248KB / ~7秒)
 - [x] USB-UART デバッグコマンド確認
+- [x] SHT40 I2C検出 + CCM送信
+- [x] SCD41 I2C検出 + CO2読取 + CCM送信
+- [x] SEN0575 SerialPIO (GPIO44/45) 検出 + Modbus RTU通信
+- [x] DS18B20 1-Wire検出 + CCM送信
+- [x] リレー調停レイヤー (relay_claims API確認)
 - [ ] 全8chリレー ON/OFF
 - [ ] DI 8ch 割り込み検知
 - [ ] DI→リレー連動
 - [ ] CCM XML受信 → リレー制御
-- [ ] SHT40 CCM送信
-- [ ] DS18B20 CCM送信
-- [ ] SEN0575 CCM送信
 - [ ] WS2812 RGB LED 点灯確認
 - [ ] ArSprout側で受信確認
+- [ ] CO2ガード発動テスト
+- [ ] 結露防止 時間帯テスト
+- [ ] 急昇温ガード発動テスト
 
 ### RP2350Bピンマップ注意事項
 
@@ -275,6 +370,8 @@ Room=2（ArSprout=Room 1との共存）、Order=CH番号。
 |------|------|------|------|
 | I2C SDA/SCL | 6/7 | **I2C1** (I2C0ではない) | `Wire1` を使用 |
 | W5500 SPI | 33-36 | **SPI0** (SPI1ではない) | `SPI` を使用 |
+| RS485 TX/RX | 4/5 | UART1 | 差動トランシーバ経由。RS485機器専用 |
+| SEN0575 TX/RX | 44/45 | **SerialPIO** | 拡張ヘッダ。TTL UART直結 |
 | DS18B20 | 3 | 1-Wire | Grove基板から引出し |
 | WS2812 | 2 | NeoPixel | ボード上実装済み |
 
