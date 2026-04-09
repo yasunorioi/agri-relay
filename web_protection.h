@@ -1,0 +1,172 @@
+#pragma once
+
+// ============================================================
+// Protection Page (GET /protection) — Dew + Rate Guard
+// ============================================================
+void sendProtectionPage(WiFiClient& client) {
+  sendCommonHead(client, "Protection");
+  client.println("<style>input[type=number]{width:70px}select{width:80px}");
+  client.println("fieldset{border:1px solid #3e3e44;border-radius:6px;padding:12px;margin:12px 0}");
+  client.println("legend{color:#5e6ad2;font-weight:bold}</style></head><body>");
+  client.println("<h2>Protection</h2>");
+  client.print(NAV_LINKS); client.println();
+  client.println("<div class=sec id=pstat>Loading...</div>");
+
+  // Dew Prevention form
+  client.println("<form action=/api/protection onsubmit=\"return protSubmit(this,this.querySelector('[type=submit]'))\">");
+  client.println("<fieldset><legend>Dew Prevention (結露対策)</legend>");
+  client.println("<p class=note>Runs circulation fan / heater before sunrise to prevent condensation.</p>");
+  client.println("<table>");
+  client.printf("<tr><th>Enable</th><td><input type=checkbox name=dew_en value=1%s></td></tr>\n", dewCtrl.enabled ? " checked" : "");
+  client.printf("<tr><th>Latitude</th><td><input type=number name=lat value=%.4f min=-90 max=90 step=0.01></td></tr>\n", dewCtrl.latitude);
+  client.printf("<tr><th>Longitude</th><td><input type=number name=lon value=%.4f min=-180 max=180 step=0.01></td></tr>\n", dewCtrl.longitude);
+  client.printf("<tr><th>Timezone (UTC+)</th><td><input type=number name=tz value=%d min=-12 max=14></td></tr>\n", dewCtrl.timezone_h);
+  client.printf("<tr><th>Before sunrise (min)</th><td><input type=number name=bmin value=%d min=0 max=180></td></tr>\n", dewCtrl.before_sunrise_min);
+  client.printf("<tr><th>After sunrise (min)</th><td><input type=number name=amin value=%d min=0 max=180></td></tr>\n", dewCtrl.after_sunrise_min);
+
+  // Fan relay select
+  client.printf("<tr><th>Fan relay</th><td><select name=dfan>");
+  client.printf("<option value=-1%s>-</option>", dewCtrl.fan_relay_ch < 0 ? " selected" : "");
+  for (int c = 0; c < 8; c++)
+    client.printf("<option value=%d%s>CH%d</option>", c, dewCtrl.fan_relay_ch == c ? " selected" : "", c + 1);
+  client.printf("</select></td></tr>\n");
+
+  // Heater relay select
+  client.printf("<tr><th>Heater relay</th><td><select name=dheat>");
+  client.printf("<option value=-1%s>-</option>", dewCtrl.heater_relay_ch < 0 ? " selected" : "");
+  for (int c = 0; c < 8; c++)
+    client.printf("<option value=%d%s>CH%d</option>", c, dewCtrl.heater_relay_ch == c ? " selected" : "", c + 1);
+  client.printf("</select></td></tr>\n");
+  client.println("</table></fieldset>");
+
+  // Temp Rate Guard form
+  client.println("<fieldset><legend>Temp Rate Guard (温度急変対策)</legend>");
+  client.println("<p class=note>Activates fan when temperature rises too fast (e.g. sudden sun exposure).</p>");
+  client.println("<table>");
+  client.printf("<tr><th>Enable</th><td><input type=checkbox name=rate_en value=1%s></td></tr>\n", rateGuard.enabled ? " checked" : "");
+  client.printf("<tr><th>Threshold (C/min)</th><td><input type=number name=rthr value=%.1f min=0.5 max=10 step=0.1></td></tr>\n", rateGuard.rate_threshold);
+
+  // Sensor select
+  client.printf("<tr><th>Sensor</th><td><select name=rsrc>");
+  client.printf("<option value=0%s>SHT40</option>", rateGuard.sensor_src == 0 ? " selected" : "");
+  client.printf("<option value=1%s>DS18B20</option>", rateGuard.sensor_src == 1 ? " selected" : "");
+  client.printf("</select></td></tr>\n");
+
+  // Fan relay
+  client.printf("<tr><th>Fan relay</th><td><select name=rfan>");
+  client.printf("<option value=-1%s>-</option>", rateGuard.fan_relay_ch < 0 ? " selected" : "");
+  for (int c = 0; c < 8; c++)
+    client.printf("<option value=%d%s>CH%d</option>", c, rateGuard.fan_relay_ch == c ? " selected" : "", c + 1);
+  client.printf("</select></td></tr>\n");
+
+  client.printf("<tr><th>Hold time (s)</th><td><input type=number name=rhld value=%d min=30 max=600></td></tr>\n", rateGuard.hold_sec);
+  client.println("</table></fieldset>");
+
+  // CO2 Guard
+  client.println("<fieldset><legend>CO2 Guard (requires SCD41)</legend>");
+  client.println("<table>");
+  client.printf("<tr><th>Enable</th><td><input type=checkbox name=co2_en value=1%s></td></tr>\n", co2Guard.enabled ? " checked" : "");
+  client.printf("<tr><th>Threshold (ppm)</th><td><input type=number name=co2thr value=%d min=50 max=1000></td></tr>\n", co2Guard.threshold_ppm);
+  client.println("</table>");
+  client.println("<p class=note>Actions: when CO2 &le; threshold, each relay turns ON for its own duration.</p>");
+  client.println("<table><tr><th>#</th><th>Relay CH</th><th>Duration(s)</th></tr>");
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    client.printf("<tr><td>%d</td><td><select name=ca%d>", i + 1, i);
+    client.printf("<option value=-1%s>-</option>", co2Guard.actions[i].relay_ch < 0 ? " selected" : "");
+    for (int c = 0; c < 8; c++)
+      client.printf("<option value=%d%s>CH%d</option>", c, co2Guard.actions[i].relay_ch == c ? " selected" : "", c + 1);
+    client.printf("</select></td>");
+    client.printf("<td><input type=number name=cd%d value=%d min=10 max=7200></td></tr>\n", i, co2Guard.actions[i].duration_sec);
+  }
+  client.println("</table></fieldset>");
+
+  client.println("<input type=submit value='Save All'>");
+  client.println("</form>");
+
+  // Auto-refresh + form JS
+  client.println("<script>");
+  client.print(FORM_JS);
+  client.println("function protSubmit(form,btn){");
+  client.println("var dew=form.querySelector('[name=dew_en]'),rate=form.querySelector('[name=rate_en]'),co2=form.querySelector('[name=co2_en]');");
+  client.println("if(!(dew&&dew.checked)&&!(rate&&rate.checked)&&!(co2&&co2.checked)&&!confirm('All protection rules will be disabled. Continue?'))return false;");
+  client.println("var rthr=form.querySelector('[name=rthr]');");
+  client.println("if(rthr&&parseFloat(rthr.value)<=0){alert('Rate threshold must be > 0');return false;}");
+  client.println("return submitForm(form,btn);}");
+  client.println("function pLoad(){");
+  client.println("fetch('/api/state').then(function(r){return r.json();}).then(function(d){");
+  client.println("var p=d.protection||{};var s='<h3>Status</h3>';");
+  client.println("if(p.dew){var dw=p.dew;");
+  client.println("  s+='<b>Dew:</b> '+(dw.enabled?'<span class=on>\\u2713 Enabled</span>':'<span class=off>\\u2717 Disabled</span>');");
+  client.println("  if(dw.sunrise)s+=' | <b>Sunrise:</b> '+dw.sunrise;");
+  client.println("  s+=' | <b>State:</b> '+(dw.active?'<span class=on>ACTIVE</span>':'<span class=off>Standby</span>');");
+  client.println("  s+='<br>';}");
+  client.println("if(p.rate){var rt=p.rate;");
+  client.println("  s+='<b>Rate Guard:</b> '+(rt.enabled?'<span class=on>\\u2713 Enabled</span>':'<span class=off>\\u2717 Disabled</span>');");
+  client.println("  if(rt.current_rate!==null)s+=' | <b>Rate:</b> '+rt.current_rate.toFixed(2)+' C/min';");
+  client.println("  s+=' | <b>State:</b> '+(rt.active?'<span class=on>ACTIVE</span>':'<span class=off>Normal</span>');}");
+  client.println("if(p.co2){var c2=p.co2;s+='<br>';");
+  client.println("  s+='<b>CO2 Guard:</b> '+(c2.enabled?'<span class=on>Enabled</span>':'<span class=off>Disabled</span>');");
+  client.println("  s+=' | <b>Threshold:</b> '+c2.threshold_ppm+'ppm';");
+  client.println("  s+=' | <b>State:</b> '+(c2.active?'<span class=on>ACTIVE</span>':'<span class=off>Normal</span>');}");
+  client.println("document.getElementById('pstat').innerHTML=s;");
+  client.println("});}");
+  client.println("pLoad();setInterval(pLoad,3000);");
+  client.println("</script>");
+  client.println("</body></html>");
+}
+
+// ============================================================
+// POST /api/protection
+// ============================================================
+void handleProtectionPost(WiFiClient& client, const String& body) {
+  auto getField = [&](const String& key) -> String {
+    String search = key + "=";
+    int idx = body.indexOf(search);
+    if (idx < 0) return "";
+    idx += search.length();
+    int end = body.indexOf('&', idx);
+    if (end < 0) end = body.length();
+    return body.substring(idx, end);
+  };
+
+  // Dew
+  dewCtrl.enabled = (getField("dew_en") == "1");
+  String lat = getField("lat");  if (lat.length() > 0) dewCtrl.latitude = lat.toFloat();
+  String lon = getField("lon");  if (lon.length() > 0) dewCtrl.longitude = lon.toFloat();
+  String tz  = getField("tz");   if (tz.length() > 0)  dewCtrl.timezone_h = tz.toInt();
+  String bm  = getField("bmin"); if (bm.length() > 0)  dewCtrl.before_sunrise_min = bm.toInt();
+  String am  = getField("amin"); if (am.length() > 0)  dewCtrl.after_sunrise_min = am.toInt();
+  String df  = getField("dfan"); if (df.length() > 0)  dewCtrl.fan_relay_ch = df.toInt();
+  String dh  = getField("dheat");if (dh.length() > 0)  dewCtrl.heater_relay_ch = dh.toInt();
+
+  // Rate Guard
+  rateGuard.enabled = (getField("rate_en") == "1");
+  String rt = getField("rthr"); if (rt.length() > 0) rateGuard.rate_threshold = rt.toFloat();
+  String rs = getField("rsrc"); if (rs.length() > 0) rateGuard.sensor_src = rs.toInt();
+  String rf = getField("rfan"); if (rf.length() > 0) rateGuard.fan_relay_ch = rf.toInt();
+  String rh = getField("rhld"); if (rh.length() > 0) rateGuard.hold_sec = rh.toInt();
+
+  // CO2 Guard
+  co2Guard.enabled = (getField("co2_en") == "1");
+  String co2t = getField("co2thr"); if (co2t.length() > 0) co2Guard.threshold_ppm = co2t.toInt();
+  for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
+    String ca = getField(String("ca") + i); if (ca.length() > 0) co2Guard.actions[i].relay_ch = ca.toInt();
+    String cd = getField(String("cd") + i); if (cd.length() > 0) co2Guard.actions[i].duration_sec = cd.toInt();
+  }
+
+  // Reset runtimes
+  dewRun.last_calc_day = -1;  // force recalc
+  dewRun.active = false;
+  rateRun = {NAN, 0, 0.0, false, 0};
+  co2Run = {};
+
+  saveDewConfig();
+  saveRateGuardConfig();
+  saveCO2GuardConfig();
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: application/json");
+  client.println("Connection: close");
+  client.println();
+  client.println("{\"ok\":true}");
+}
