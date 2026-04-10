@@ -4,18 +4,18 @@
 // Protection Page (GET /protection) — Dew + Rate Guard
 // ============================================================
 void sendProtectionPage(WiFiClient& client) {
-  sendCommonHead(client, "Protection");
+  sendCommonHead(client, L("Protection", "保護制御"));
   client.println("<style>input[type=number]{width:70px}select{width:80px}");
   client.println("fieldset{border:1px solid #3e3e44;border-radius:6px;padding:12px;margin:12px 0}");
   client.println("legend{color:#5e6ad2;font-weight:bold}</style></head><body>");
-  client.println("<h2>Protection</h2>");
-  client.print(NAV_LINKS); client.println();
+  client.printf("<h2>%s</h2>\n", L("Protection", "保護制御"));
+  printNavLinks(client);
   client.println("<div class=sec id=pstat>Loading...</div>");
 
-  // Dew Prevention form
   client.println("<form action=/api/protection onsubmit=\"return protSubmit(this,this.querySelector('[type=submit]'))\">");
-  client.println("<fieldset><legend>Dew Prevention (結露対策)</legend>");
-  client.println("<p class=note>Runs circulation fan / heater before sunrise to prevent condensation.</p>");
+  client.printf("<fieldset><legend>%s</legend>\n", L("Dew Prevention", "結露対策"));
+  client.printf("<p class=note>%s</p>\n", L("Runs circulation fan / heater before sunrise to prevent condensation.",
+    "結露防止のため、日の出前に循環ファン/ヒーターを稼働します。"));
   client.println("<table>");
   client.printf("<tr><th>Enable</th><td><input type=checkbox name=dew_en value=1%s></td></tr>\n", dewCtrl.enabled ? " checked" : "");
   client.printf("<tr><th>Latitude</th><td><input type=number name=lat value=%.4f min=-90 max=90 step=0.01></td></tr>\n", dewCtrl.latitude);
@@ -39,9 +39,9 @@ void sendProtectionPage(WiFiClient& client) {
   client.printf("</select></td></tr>\n");
   client.println("</table></fieldset>");
 
-  // Temp Rate Guard form
-  client.println("<fieldset><legend>Temp Rate Guard (温度急変対策)</legend>");
-  client.println("<p class=note>Activates fan when temperature rises too fast (e.g. sudden sun exposure).</p>");
+  client.printf("<fieldset><legend>%s</legend>\n", L("Temp Rate Guard", "温度急変対策"));
+  client.printf("<p class=note>%s</p>\n", L("Activates fan when temperature rises too fast (e.g. sudden sun exposure).",
+    "温度が急上昇した際（例：急激な日射）にファンを稼働します。"));
   client.println("<table>");
   client.printf("<tr><th>Enable</th><td><input type=checkbox name=rate_en value=1%s></td></tr>\n", rateGuard.enabled ? " checked" : "");
   client.printf("<tr><th>Threshold (C/min)</th><td><input type=number name=rthr value=%.1f min=0.5 max=10 step=0.1></td></tr>\n", rateGuard.rate_threshold);
@@ -62,13 +62,13 @@ void sendProtectionPage(WiFiClient& client) {
   client.printf("<tr><th>Hold time (s)</th><td><input type=number name=rhld value=%d min=30 max=600></td></tr>\n", rateGuard.hold_sec);
   client.println("</table></fieldset>");
 
-  // CO2 Guard
-  client.println("<fieldset><legend>CO2 Guard (requires SCD41)</legend>");
+  client.printf("<fieldset><legend>%s</legend>\n", L("CO2 Guard (requires SCD41)", "CO2ガード（SCD41必要）"));
   client.println("<table>");
   client.printf("<tr><th>Enable</th><td><input type=checkbox name=co2_en value=1%s></td></tr>\n", co2Guard.enabled ? " checked" : "");
   client.printf("<tr><th>Threshold (ppm)</th><td><input type=number name=co2thr value=%d min=50 max=1000></td></tr>\n", co2Guard.threshold_ppm);
   client.println("</table>");
-  client.println("<p class=note>Actions: when CO2 &le; threshold, each relay turns ON for its own duration.</p>");
+  client.printf("<p class=note>%s</p>\n", L("Actions: when CO2 &le; threshold, each relay turns ON for its own duration.",
+    "動作: CO2が閾値以下になると各リレーが指定時間ONになります。"));
   client.println("<table><tr><th>#</th><th>Relay CH</th><th>Duration(s)</th></tr>");
   for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
     client.printf("<tr><td>%d</td><td><select name=ca%d>", i + 1, i);
@@ -80,7 +80,7 @@ void sendProtectionPage(WiFiClient& client) {
   }
   client.println("</table></fieldset>");
 
-  client.println("<input type=submit value='Save All'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save All","全て保存"));
   client.println("</form>");
 
   // Auto-refresh + form JS
@@ -88,7 +88,8 @@ void sendProtectionPage(WiFiClient& client) {
   client.print(FORM_JS);
   client.println("function protSubmit(form,btn){");
   client.println("var dew=form.querySelector('[name=dew_en]'),rate=form.querySelector('[name=rate_en]'),co2=form.querySelector('[name=co2_en]');");
-  client.println("if(!(dew&&dew.checked)&&!(rate&&rate.checked)&&!(co2&&co2.checked)&&!confirm('All protection rules will be disabled. Continue?'))return false;");
+  client.printf("if(!(dew&&dew.checked)&&!(rate&&rate.checked)&&!(co2&&co2.checked)&&!confirm('%s'))return false;\n",
+    L("All protection rules will be disabled. Continue?", "全保護ルールが無効になります。続けますか？"));
   client.println("var rthr=form.querySelector('[name=rthr]');");
   client.println("if(rthr&&parseFloat(rthr.value)<=0){alert('Rate threshold must be > 0');return false;}");
   client.println("return submitForm(form,btn);}");

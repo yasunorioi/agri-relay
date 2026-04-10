@@ -50,6 +50,19 @@ function relay(ch,v){
 }
 function load(){
   fetch('/api/state').then(function(r){return r.json();}).then(function(d){
+    var T=d.language==='jp'?{
+      net:'ネットワーク',devstat:'デバイス状態',sensors:'センサー',
+      on:'オン',off:'オフ',gh:'温室制御',irri:'日射灌水',prot:'保護制御',
+      settings:'設定',notcfg:'未設定',watering:'灌水中',accum:'積算中',
+      norules:'ルール未設定',active:'稼働中',standby:'待機中',normal:'正常',
+      configure:'設定する',solar:'日射',irriSolar:'日射灌水'
+    }:{
+      net:'Network',devstat:'Device Status',sensors:'Sensors',
+      on:'ON',off:'OFF',gh:'Greenhouse Control',irri:'Solar Irrigation',prot:'Protection',
+      settings:'Settings',notcfg:'Not configured',watering:'WATERING',accum:'Accumulating',
+      norules:'No rules active',active:'ACTIVE',standby:'Standby',normal:'Normal',
+      configure:'Configure',solar:'Solar',irriSolar:'Solar Irrigation'
+    };
     document.getElementById('sys').innerHTML=
       '<b>Node:</b> '+d.node_id+' | <b>FW:</b> '+d.version+
       ' | <b>Protocol:</b> <span style="color:#ffa726">UECS-CCM</span>'+
@@ -58,14 +71,14 @@ function load(){
       ' | <a href="/ccm">CCM</a> | <a href="/greenhouse">Greenhouse</a> | <a href="/irrigation">Irrigation</a> | <a href="/protection">Protection</a> | <a href="/config">Network</a> | <a href="/ota">FW</a>';
     var mdnsHost=d.mdns_hostname?(' | <b>mDNS:</b> '+d.mdns_hostname):'';
     document.getElementById('net').innerHTML=
-      '<h3>Network</h3><b>IP:</b> '+d.ip+
+      '<h3>'+T.net+'</h3><b>IP:</b> '+d.ip+
       ' | <b>GW:</b> '+d.gateway+mdnsHost+
       '<br><b>MAC:</b> '+d.mac+
       ' | <b>CCM:</b> 224.0.0.1:16520';
     var solSrc=d.ads1110_ok?'<span class=badge-ok>ADS1110 \u2713</span>':(d.sensor&&d.sensor.solar_wm2!==null?'<span class=badge-ok>CCM \u2713</span>':'<span class=badge-ng>none \u2717</span>');
     var solVal=(d.sensor&&d.sensor.solar_wm2!==null)?' '+d.sensor.solar_wm2.toFixed(0)+'W/m&sup2;':'';
     document.getElementById('devstat').innerHTML=
-      '<h3>Device Status</h3>'+
+      '<h3>'+T.devstat+'</h3>'+
       '<b>I2C:</b> '+(d.sht40_ok?'<span class=badge-ok>SHT40 \u2713</span>':'<span class=badge-ng>SHT40 \u2717</span>')+
       (d.scd41_ok?' <span class=badge-ok>SCD41 \u2713</span>':' <span class=badge-ng>SCD41 \u2717</span>')+
       ' | <b>Solar:</b> '+solSrc+solVal+
@@ -80,7 +93,7 @@ function load(){
       rt+='<tr><td>'+(i+1)+'</td><td>'+tname+' <span class=ccm>R'+
         (m.room||'-')+'/Rg'+(m.region||'-')+'/O'+(m.order||'-')+'</span></td>'+
         '<td>'+(m.room||'-')+'</td>'+
-        '<td class="'+(s?'on':'off')+'">'+(s?'\u2713 ON':'\u2717 OFF')+'</td>'+
+        '<td class="'+(s?'on':'off')+'">'+(s?'\u2713 '+T.on:'\u2717 '+T.off)+'</td>'+
         '<td><button class=bon onclick="relay('+(i+1)+',1)">ON</button> '+
         '<button class=bof onclick="relay('+(i+1)+',0)">OFF</button></td></tr>';
     }
@@ -91,7 +104,7 @@ function load(){
       dt+='<tr><td>'+(i+1)+'</td><td class="'+(s?'on':'off')+'">'+(s?'\u2713 ON':'\u2717 OFF')+'</td></tr>';
     }
     document.getElementById('dtbl').innerHTML=dt;
-    var sv='<h3>Sensors</h3>';
+    var sv='<h3>'+T.sensors+'</h3>';
     if(d.sensor&&d.sensor.temp!==null)sv+='<b>SHT40 Temp:</b> '+d.sensor.temp.toFixed(1)+'C ';
     if(d.sensor&&d.sensor.hum!==null)sv+='<b>Hum:</b> '+d.sensor.hum.toFixed(1)+'% ';
     if(d.sensor&&d.sensor.ds18b20_temp!==null)sv+='<b>DS18B20:</b> '+d.sensor.ds18b20_temp.toFixed(1)+'C ';
@@ -116,7 +129,7 @@ function load(){
     var anyGh=false;
     for(var i=0;i<gh.length;i++){if(gh[i].enabled)anyGh=true;}
     if(anyGh){
-      var gv='<h3>Greenhouse Control</h3><table><tr><th>Rule</th><th>CH</th><th>Sensor</th><th>Temp</th><th>Range</th><th>Duty</th><th>State</th></tr>';
+      var gv='<h3>'+T.gh+'</h3><table><tr><th>Rule</th><th>CH</th><th>Sensor</th><th>Temp</th><th>Range</th><th>Duty</th><th>State</th></tr>';
       for(var i=0;i<gh.length;i++){
         var g=gh[i];
         if(!g.enabled)continue;
@@ -126,30 +139,30 @@ function load(){
         gv+='<td>'+g.duty+'%</td>';
         gv+='<td class='+(g.active?'on':'off')+'>'+(g.active?'\u2713 ON':'\u2717 OFF')+'</td></tr>';
       }
-      gv+='</table><p><a href="/greenhouse">Settings</a></p>';
+      gv+='</table><p><a href="/greenhouse">'+T.settings+'</a></p>';
       document.getElementById('gh').innerHTML=gv;
     } else {
-      document.getElementById('gh').innerHTML='<h3>Greenhouse Control</h3><span class=off>No rules active</span> — <a href="/greenhouse">Configure</a>';
+      document.getElementById('gh').innerHTML='<h3>'+T.gh+'</h3><span class=off>'+T.norules+'</span> — <a href="/greenhouse">'+T.configure+'</a>';
     }
     var ir=d.irrigation||[];
     var anyIr=false;
     for(var i=0;i<ir.length;i++){if(ir[i].enabled)anyIr=true;}
     if(anyIr){
-      var iv='<h3>Solar Irrigation</h3>';
-      if(d.sensor&&d.sensor.solar_wm2!==null)iv+='<b>Solar:</b> '+d.sensor.solar_wm2.toFixed(1)+' W/m&sup2; | ';
+      var iv='<h3>'+T.irriSolar+'</h3>';
+      if(d.sensor&&d.sensor.solar_wm2!==null)iv+='<b>'+T.solar+':</b> '+d.sensor.solar_wm2.toFixed(1)+' W/m&sup2; | ';
       iv+='<table><tr><th>Rule</th><th>CH</th><th>Accum</th><th>Threshold</th><th>State</th><th>Today</th></tr>';
       for(var i=0;i<ir.length;i++){var r=ir[i];if(!r.enabled)continue;
         iv+='<tr><td>'+(i+1)+'</td><td>CH'+(r.relay_ch+1)+'</td>';
         iv+='<td>'+r.accum_mj.toFixed(3)+' MJ</td><td>'+r.threshold_mj+' MJ</td>';
-        iv+='<td class='+(r.irrigating?'on':'off')+'>'+(r.irrigating?'\u2713 WATERING':'\u2717 Accum.')+'</td>';
+        iv+='<td class='+(r.irrigating?'on':'off')+'>'+(r.irrigating?'\u2713 '+T.watering:'\u2717 '+T.accum)+'</td>';
         iv+='<td><b>'+r.today_count+'</b></td></tr>';}
-      iv+='</table><p><a href="/irrigation">Settings</a></p>';
+      iv+='</table><p><a href="/irrigation">'+T.settings+'</a></p>';
       document.getElementById('irri').innerHTML=iv;
     } else {
-      document.getElementById('irri').innerHTML='<h3>Solar Irrigation</h3><span class=off>Not configured</span> — <a href="/irrigation">Configure</a>';
+      document.getElementById('irri').innerHTML='<h3>'+T.irriSolar+'</h3><span class=off>'+T.notcfg+'</span> — <a href="/irrigation">'+T.configure+'</a>';
     }
     var p=d.protection||{};
-    var pv='<h3>Protection</h3>';
+    var pv='<h3>'+T.prot+'</h3>';
     var anyP=false;
     if(p.dew&&p.dew.enabled){anyP=true;
       pv+='<b>Dew:</b> '+(p.dew.active?'<span class=on>\u2713 ACTIVE</span>':'\u2717 Standby');
@@ -158,10 +171,10 @@ function load(){
     if(p.rate&&p.rate.enabled){anyP=true;
       pv+='<b>Rate Guard:</b> '+(p.rate.active?'<span class=on>\u2713 ACTIVE</span>':'\u2717 Normal');
       if(p.rate.current_rate!==null)pv+=' ('+p.rate.current_rate.toFixed(1)+'C/min)';}
-    if(anyP){pv+=' — <a href="/protection">Settings</a>';
+    if(anyP){pv+=' — <a href="/protection">'+T.settings+'</a>';
       document.getElementById('prot').innerHTML=pv;
     }else{
-      document.getElementById('prot').innerHTML='<h3>Protection</h3><span class=off>Not configured</span> — <a href="/protection">Configure</a>';
+      document.getElementById('prot').innerHTML='<h3>'+T.prot+'</h3><span class=off>'+T.notcfg+'</span> — <a href="/protection">'+T.configure+'</a>';
     }
   });
 }

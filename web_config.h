@@ -19,18 +19,19 @@ void sendConfigPage(WiFiClient& client) {
     }
   }
 
-  sendCommonHead(client, "Config - CCM Relay");
+  sendCommonHead(client, L("Config - CCM Relay", "設定 - CCM Relay"));
   client.println("<style>label{display:block;margin:6px 0 2px}");
   client.println("input[type=text],input[type=number]{width:220px;padding:4px;background:#1a1a1f;color:#eee;border:1px solid #3e3e44;border-radius:3px}</style></head><body>");
-  client.println("<h2>Network Configuration</h2>");
-  client.print(NAV_LINKS); client.println();
-  client.println("<form action=/api/config onsubmit=\"if(!confirm('Save and reboot?'))return false;return submitForm(this,this.querySelector('[type=submit]'))\">");
-  client.println("<div class=sec><h3>Identity</h3>");
+  client.printf("<h2>%s</h2>\n", L("Network Configuration", "ネットワーク設定"));
+  printNavLinks(client);
+  client.printf("<form action=/api/config onsubmit=\"if(!confirm('%s'))return false;return submitForm(this,this.querySelector('[type=submit]'))\">\n",
+    L("Save and reboot?", "保存して再起動しますか？"));
+  client.printf("<div class=sec><h3>%s</h3>\n", L("Identity", "識別情報"));
   client.printf("<label for=node_id>node_id</label><input id=node_id type=text name=node_id value='%s'>\n", nodeId.c_str());
   client.printf("<label for=node_name>node_name</label><input id=node_name type=text name=node_name value='%s'>\n", nodeName.c_str());
   client.println("</div>");
-  client.println("<div class=sec><h3>IP Address</h3>");
-  client.println("<p class=note>Leave IP blank for DHCP.</p>");
+  client.printf("<div class=sec><h3>%s</h3>\n", L("IP Address", "IPアドレス"));
+  client.printf("<p class=note>%s</p>\n", L("Leave IP blank for DHCP.", "IPを空白にするとDHCPになります。"));
   client.printf("<label>IP<input type=text name=ip value='%s' placeholder='DHCP'></label>\n", curIp.c_str());
   client.printf("<label>Subnet<input type=text name=subnet value='%s'></label>\n", curSubnet.c_str());
   client.printf("<label>Gateway<input type=text name=gateway value='%s'></label>\n", curGateway.c_str());
@@ -38,11 +39,11 @@ void sendConfigPage(WiFiClient& client) {
   client.println("</div>");
   client.println("<div class=sec><h3>mDNS</h3>");
   client.printf("<label>Hostname<input type=text name=mdns_hostname value='%s' maxlength=32 placeholder='uecs-ccm-01'></label>\n", mdnsHostname.c_str());
-  client.println("<p class=note>Access via <b>&lt;hostname&gt;.local</b></p>");
-  client.printf("<label><input type=checkbox name=mdns_enabled value=1%s> Enable mDNS</label>\n",
-                mdns_enabled ? " checked" : "");
+  client.printf("<p class=note>%s</p>\n", L("Access via <b>&lt;hostname&gt;.local</b>", "<b>&lt;hostname&gt;.local</b> でアクセス可能"));
+  client.printf("<label><input type=checkbox name=mdns_enabled value=1%s> %s</label>\n",
+                mdns_enabled ? " checked" : "", L("Enable mDNS", "mDNS有効"));
   client.println("</div>");
-  client.println("<input type=submit value='Save &amp; Reboot'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save &amp; Reboot", "保存して再起動"));
   client.println("</form>");
   client.println("<script>");
   client.print(FORM_JS);

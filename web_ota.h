@@ -4,7 +4,7 @@
 // OTA Firmware Update Page (GET /ota)
 // ============================================================
 void sendOTAPage(WiFiClient& client) {
-  sendCommonHead(client, "Firmware Update");
+  sendCommonHead(client, L("Firmware Update", "ファームウェア更新"));
   client.println("<style>.sec{padding:16px}");
   client.println("#prog{width:100%;height:24px;background:#2e2e2e;border-radius:4px;margin:10px 0;display:none}");
   client.println("#progBar{height:100%;background:#1976d2;border-radius:4px;width:0%;transition:width 0.3s}");
@@ -12,12 +12,13 @@ void sendOTAPage(WiFiClient& client) {
   client.println("input[type=file]{margin:8px 0}");
   client.println("button{background:#1976d2;color:#fff;border:none;padding:8px 20px;border-radius:4px;cursor:pointer}");
   client.println("button:disabled{background:#555}</style></head><body>");
-  client.println("<h2>Firmware Update</h2>");
-  client.print(NAV_LINKS); client.println();
-  client.printf("<div class=sec><p>Current: <b>%s</b> v%s</p>\n", FW_NAME, FW_VERSION);
-  client.println("<p class=note>Select a .bin firmware file compiled with arduino-cli.</p>");
+  client.printf("<h2>%s</h2>\n", L("Firmware Update", "ファームウェア更新"));
+  printNavLinks(client);
+  client.printf("<div class=sec><p>%s <b>%s</b> v%s</p>\n", L("Current:", "現在:"), FW_NAME, FW_VERSION);
+  client.printf("<p class=note>%s</p>\n", L("Select a .bin firmware file compiled with arduino-cli.",
+    "arduino-cliでコンパイルした.binファームウェアファイルを選択してください。"));
   client.println("<input type=file id=fw accept='.bin'><br>");
-  client.println("<button id=btn onclick=doOTA()>Upload &amp; Flash</button>");
+  client.printf("<button id=btn onclick=doOTA()>%s</button>\n", L("Upload &amp; Flash", "アップロード＆書込み"));
   client.println("<div id=prog><div id=progBar></div></div>");
   client.println("<div id=msg></div></div>");
   client.println("<script>");

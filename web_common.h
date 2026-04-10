@@ -25,7 +25,28 @@ a{color:#d0d6e0}.note{color:#8a8f98;font-size:0.85em}
 }
 )CSS";
 
-static const char NAV_LINKS[] PROGMEM = "<p><a href='/'>Dashboard</a> | <a href='/ccm'>CCM</a> | <a href='/greenhouse'>Greenhouse</a> | <a href='/irrigation'>Irrigation</a> | <a href='/protection'>Protection</a> | <a href='/config'>Network</a> | <a href='/ota'>FW</a></p>";
+extern int g_language;
+
+void printNavLinks(WiFiClient& client) {
+  client.printf("<p>"
+    "<a href='/'>%s</a> | "
+    "<a href='/ccm'>%s</a> | "
+    "<a href='/greenhouse'>%s</a> | "
+    "<a href='/irrigation'>%s</a> | "
+    "<a href='/protection'>%s</a> | "
+    "<a href='/config'>%s</a> | "
+    "<a href='/ota'>%s</a> | "
+    "<a href='/api/language?lang=%s'>%s</a></p>\n",
+    g_language==1 ? "ダッシュボード"  : "Dashboard",
+    g_language==1 ? "CCM割当"         : "CCM",
+    g_language==1 ? "温室制御"         : "Greenhouse",
+    g_language==1 ? "灌水"             : "Irrigation",
+    g_language==1 ? "保護制御"         : "Protection",
+    g_language==1 ? "ネットワーク"     : "Network",
+    g_language==1 ? "FW更新"           : "FW",
+    g_language==0 ? "jp" : "en",
+    g_language==0 ? "日本語"           : "English");
+}
 
 static const char FORM_JS[] PROGMEM = R"JS(
 function submitForm(form,btn){

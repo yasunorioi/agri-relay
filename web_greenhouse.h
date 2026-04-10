@@ -4,21 +4,22 @@
 // Greenhouse Control Page (GET /greenhouse)
 // ============================================================
 void sendGreenhousePage(WiFiClient& client) {
-  sendCommonHead(client, "Greenhouse Control");
+  sendCommonHead(client, L("Greenhouse Control", "温室制御"));
   client.println("<style>input[type=number]{width:60px}select{width:80px}");
   client.println(".curve-extra{display:none}.sec h3{margin:0 0 8px}</style></head><body>");
-  client.println("<h2>Greenhouse Control</h2>");
-  client.print(NAV_LINKS); client.println();
-  client.println("<p class=note>Temperature-based proportional relay control. CCM commands take priority when active.</p>");
+  client.printf("<h2>%s</h2>\n", L("Greenhouse Control", "温室制御"));
+  printNavLinks(client);
+  client.printf("<p class=note>%s</p>\n", L("Temperature-based proportional relay control. CCM commands take priority when active.",
+    "温度比例リレー制御。CCMコマンドが有効な場合はCCMが優先されます。"));
   client.println("<div class=sec id=ghstat>Loading...</div>");
   client.println("<div class=sec id=ghrun>Loading...</div>");
 
   // === Greenhouse Config form ===
-  client.println("<div class=sec><h3>Greenhouse Rules</h3>");
+  client.printf("<div class=sec><h3>%s</h3>\n", L("Greenhouse Rules", "温室制御ルール"));
   client.println("<form id=ghform action=/api/greenhouse onsubmit=\"return ghSubmit(this,this.querySelector('[type=submit]'))\">");
   for (int i = 0; i < GH_CTRL_SLOTS; i++) {
     client.printf("<div class=sec><b>Rule %d</b><br>", i + 1);
-    client.printf("<label><input type=checkbox name=en%d id=en%d aria-label='Enable rule %d' value=1%s> Enable</label> ", i, i, i+1, ghCtrl[i].enabled ? " checked" : "");
+    client.printf("<label><input type=checkbox name=en%d id=en%d aria-label='Enable rule %d' value=1%s> %s</label> ", i, i, i+1, ghCtrl[i].enabled ? " checked" : "", L("Enable","有効"));
     // CH select
     client.printf("CH:<select name=ch%d>", i);
     client.printf("<option value=-1%s>-</option>", ghCtrl[i].ch < 0 ? " selected" : "");
@@ -55,16 +56,16 @@ void sendGreenhousePage(WiFiClient& client) {
     client.println("</table></span>");
     client.println("</div>");
   }
-  client.println("<input type=submit value='Save Rules'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save Rules","ルールを保存"));
   client.println("</form></div>");
 
-  // === Aperture (Side Window) Config form ===
-  client.println("<div class=sec><h3>Side Window Aperture</h3>");
-  client.println("<p class=note>Time-based aperture control. Define open/close durations per % range.</p>");
+  client.printf("<div class=sec><h3>%s</h3>\n", L("Side Window Aperture", "側窓開度制御"));
+  client.printf("<p class=note>%s</p>\n", L("Time-based aperture control. Define open/close durations per %% range.",
+    "時間ベースの開度制御。%%範囲ごとに開閉時間を設定します。"));
   client.println("<form id=aptform action=/api/aperture onsubmit=\"return submitForm(this,this.querySelector('[type=submit]'))\">");
   for (int i = 0; i < APT_SLOTS; i++) {
     client.printf("<div class=sec><b>Slot %d</b><br>", i + 1);
-    client.printf("<label><input type=checkbox name=apt_en%d value=1%s> Enable</label> ", i, aptCtrl[i].enabled ? " checked" : "");
+    client.printf("<label><input type=checkbox name=apt_en%d value=1%s> %s</label> ", i, aptCtrl[i].enabled ? " checked" : "", L("Enable","有効"));
     // Open CH
     client.printf("Open CH:<select name=apt_ch%d>", i);
     client.printf("<option value=-1%s>-</option>", aptCtrl[i].ch < 0 ? " selected" : "");
@@ -92,7 +93,7 @@ void sendGreenhousePage(WiFiClient& client) {
     }
     client.println("</table></div>");
   }
-  client.println("<input type=submit value='Save Aperture'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save Aperture","開度設定を保存"));
   client.println("</form></div>");
 
   // Auto-refresh + form JS
@@ -110,7 +111,8 @@ void sendGreenhousePage(WiFiClient& client) {
   // GH submit validation
   client.println("function ghSubmit(form,btn){");
   client.println("var anyEn=false;for(var i=0;i<4;i++){var e=form.querySelector('[name=en'+i+']');if(e&&e.checked)anyEn=true;}");
-  client.println("if(!anyEn&&!confirm('All rules will be disabled. Continue?'))return false;");
+  client.printf("if(!anyEn&&!confirm('%s'))return false;\n",
+    L("All rules will be disabled. Continue?","全ルールが無効になります。続けますか？"));
   client.println("for(var i=0;i<4;i++){");
   client.println("var to=form.querySelector('[name=to'+i+']');");
   client.println("var tf=form.querySelector('[name=tf'+i+']');");

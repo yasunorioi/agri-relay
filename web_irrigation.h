@@ -4,20 +4,23 @@
 // Solar Irrigation Page (GET /irrigation)
 // ============================================================
 void sendIrrigationPage(WiFiClient& client) {
-  sendCommonHead(client, "Solar Irrigation");
+  sendCommonHead(client, L("Solar Irrigation", "日射灌水"));
   client.println("<style>input[type=number]{width:70px}select{width:80px}");
   client.println(".bar{background:#2e2e2e;border-radius:3px;height:18px;width:120px;display:inline-block;vertical-align:middle}");
   client.println(".fill{height:100%;border-radius:3px}</style></head><body>");
-  client.println("<h2>Solar Irrigation</h2>");
-  client.print(NAV_LINKS); client.println();
-  client.println("<p class=note>Accumulated solar radiation triggers irrigation. Requires ADS1110 + PVSS-03 on I2C Grove.</p>");
+  client.printf("<h2>%s</h2>\n", L("Solar Irrigation", "日射灌水"));
+  printNavLinks(client);
+  client.printf("<p class=note>%s</p>\n", L("Accumulated solar radiation triggers irrigation. Requires ADS1110 + PVSS-03 on I2C Grove.",
+    "積算日射量で灌水をトリガーします。I2C GroveにADS1110+PVSS-03が必要。"));
   client.println("<div class=sec id=solstat>Loading...</div>");
   client.println("<div class=sec id=irrirun>Loading...</div>");
 
   // Config form
   client.println("<h3>Settings</h3>");
   client.println("<form action=/api/irrigation onsubmit=\"return irriSubmit(this,this.querySelector('[type=submit]'))\">");
-  client.println("<table><tr><th>Rule</th><th>Enable</th><th>Relay CH</th><th>Mode</th><th title='Accumulated MJ/m&sup2; to trigger irrigation'>Threshold(MJ/m&sup2;)</th><th title='Solar threshold: accumulation pauses below this'>Min W/m&sup2;</th></tr>");
+  client.printf("<table><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>Min W/m&sup2;</th></tr>\n",
+    L("Rule","ルール"), L("Enable","有効"), L("Relay CH","リレーCH"),
+    L("Mode","モード"), L("Threshold(MJ/m&sup2;)","閾値(MJ/m&sup2;)"));
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><input type=checkbox name=en%d id=irri_en%d aria-label='Enable rule %d' value=1%s></td>", i, i, i+1, irriCtrl[i].enabled ? " checked" : "");
@@ -34,9 +37,9 @@ void sendIrrigationPage(WiFiClient& client) {
   }
   client.println("</table>");
 
-  // Mode 0: Timer settings
-  client.println("<h4>Timer Mode (mode=0)</h4>");
-  client.println("<table><tr><th>Rule</th><th>Duration(s)</th><th>Drain Stop(s)</th></tr>");
+  client.printf("<h4>%s</h4>\n", L("Timer Mode (mode=0)", "タイマーモード (mode=0)"));
+  client.printf("<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>\n",
+    L("Rule","ルール"), L("Duration(s)","継続時間(s)"), L("Drain Stop(s)","排液停止(s)"));
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><input type=number name=du%d value=%d min=10 max=3600></td>", i, irriCtrl[i].duration_sec);
@@ -44,9 +47,9 @@ void sendIrrigationPage(WiFiClient& client) {
   }
   client.println("</table>");
 
-  // Mode 1: Duty settings
-  client.println("<h4>Duty Mode (mode=1)</h4>");
-  client.println("<table><tr><th>Rule</th><th>Cycle(s)</th><th>Init Duty%</th><th>Min%</th><th>Max%</th><th>Step%</th><th>Drain Lo%</th><th>Drain Hi%</th></tr>");
+  client.printf("<h4>%s</h4>\n", L("Duty Mode (mode=1)", "デューティモード (mode=1)"));
+  client.printf("<table><tr><th>%s</th><th>%s</th><th>Init%%</th><th>Min%%</th><th>Max%%</th><th>Step%%</th><th>%s</th><th>%s</th></tr>\n",
+    L("Rule","ルール"), L("Cycle(s)","周期(s)"), L("Drain Lo%","排液Lo%"), L("Drain Hi%","排液Hi%"));
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><input type=number name=dc%d value=%d min=10 max=600></td>", i, irriCtrl[i].duty_cycle_sec);
@@ -59,9 +62,8 @@ void sendIrrigationPage(WiFiClient& client) {
   }
   client.println("</table>");
 
-  // Sensor calibration
-  client.println("<h4>Sensor Calibration</h4>");
-  client.println("<table><tr><th>Rule</th><th>Flow DI</th><th>mL/pulse</th><th>Drain mL/tip</th></tr>");
+  client.printf("<h4>%s</h4>\n", L("Sensor Calibration", "センサーキャリブレーション"));
+  client.printf("<table><tr><th>%s</th><th>Flow DI</th><th>mL/pulse</th><th>Drain mL/tip</th></tr>\n", L("Rule","ルール"));
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><select name=fd%d><option value=0%s>DI1</option><option value=1%s>DI2</option></select></td>",
@@ -71,10 +73,16 @@ void sendIrrigationPage(WiFiClient& client) {
   }
   client.println("</table>");
 
-  client.println("<input type=submit value='Save'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save","保存"));
   client.println("</form>");
-  client.println("<p class=note><b>Timer mode</b>: solar threshold triggers, runs for Duration seconds, optional drain stop.<br>");
-  client.println("<b>Duty mode</b>: solar threshold triggers, then duty cycle adjusts based on drain rate feedback.<br>");
+  client.printf("<p class=note><b>%s</b>: %s<br>\n",
+    L("Timer mode","タイマーモード"),
+    L("solar threshold triggers, runs for Duration seconds, optional drain stop.",
+      "日射閾値でトリガー、継続時間秒間動作、排液停止オプションあり。"));
+  client.printf("<b>%s</b>: %s<br>\n",
+    L("Duty mode","デューティモード"),
+    L("solar threshold triggers, then duty cycle adjusts based on drain rate feedback.",
+      "日射閾値でトリガー後、排液率フィードバックでデューティサイクルを調整。"));
   client.println("Drain rate = (drain mL) / (flow mL). Duty increases when below Lo%, decreases above Hi%.<br>");
   client.println("Session ends when drain rate exceeds Hi% and duty reaches minimum.</p>");
 
@@ -83,7 +91,8 @@ void sendIrrigationPage(WiFiClient& client) {
   client.print(FORM_JS);
   client.println("function irriSubmit(form,btn){");
   client.println("var anyEn=false;for(var i=0;i<2;i++){var e=form.querySelector('[name=en'+i+']');if(e&&e.checked)anyEn=true;}");
-  client.println("if(!anyEn&&!confirm('All rules will be disabled. Continue?'))return false;");
+  client.printf("if(!anyEn&&!confirm('%s'))return false;\n",
+    L("All rules will be disabled. Continue?", "全ルールが無効になります。続けますか？"));
   client.println("for(var i=0;i<2;i++){");
   client.println("var th=form.querySelector('[name=th'+i+']');");
   client.println("var du=form.querySelector('[name=du'+i+']');");

@@ -294,6 +294,7 @@ ApertureRuntime aptRun[APT_SLOTS];
 // CCM InRadiation受信キャッシュ
 struct CcmSolarInfo { float wm2; int room; int region; int order; unsigned long last_rx; };
 CcmSolarInfo ccmSolar = {NAN, 0, 0, 0, 0};
+int g_language = 0;  // 0=EN, 1=JP
 
 // ========== Timing ==========
 const int           SENSOR_INTERVAL      = 10;
@@ -399,6 +400,7 @@ uint16_t sen0575_workTimeMins = 0;
 
 // ========== Function Declarations ==========
 void loadConfig();
+void saveLangToConfig();
 void loadCcmMapping();
 void saveCcmMapping();
 void initEthernet();
@@ -2107,6 +2109,7 @@ void loadConfig() {
         ipStr        = (const char*)(doc["ip"]             | DEFAULT_IP);
         rs485Baud    = doc["rs485_baud"] | RS485_DEFAULT_BAUD;
         mdns_enabled = doc["mdns_enabled"] | DEFAULT_MDNS_ENABLED;
+        g_language   = doc["language"] | 0;
 
         if (ipStr.length() > 0) {
           IPAddress ip, subnet, gw, dns;
@@ -2127,6 +2130,17 @@ void loadConfig() {
   nodeId       = DEFAULT_NODE_ID;
   nodeName     = DEFAULT_NODE_NAME;
   mdnsHostname = DEFAULT_MDNS_HOSTNAME;
+}
+
+void saveLangToConfig() {
+  JsonDocument doc;
+  if (LittleFS.exists("/config.json")) {
+    File rf = LittleFS.open("/config.json", "r");
+    if (rf) { deserializeJson(doc, rf); rf.close(); }
+  }
+  doc["language"] = g_language;
+  File f = LittleFS.open("/config.json", "w");
+  if (f) { serializeJson(doc, f); f.close(); }
 }
 
 // ============================================================
@@ -2190,6 +2204,7 @@ void rebootWithReason(const char* reason) {
 // WebUI (split into header files)
 // ============================================================
 #include "web_common.h"
+#include "web_i18n.h"
 #include "web_dashboard.h"
 #include "web_api.h"
 #include "web_config.h"
@@ -2251,6 +2266,18 @@ void handleWebClient() {
     sendDashboard(client);
   } else if (method == "GET" && path == "/api/state") {
     sendAPIState(client);
+  } else if (method == "GET" && path.startsWith("/api/language")) {
+    int qi = path.indexOf("lang=");
+    if (qi >= 0) {
+      String lang = path.substring(qi + 5);
+      int amp = lang.indexOf('&'); if (amp >= 0) lang = lang.substring(0, amp);
+      g_language = (lang == "jp") ? 1 : 0;
+      saveLangToConfig();
+    }
+    client.println("HTTP/1.1 302 Found");
+    client.println("Location: /");
+    client.println("Connection: close");
+    client.println();
   } else if (method == "GET" && path == "/api/config") {
     sendAPIConfig(client);
   } else if (method == "GET" && path == "/config") {

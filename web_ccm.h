@@ -4,20 +4,22 @@
 // CCM Config Page (GET /ccm)
 // ============================================================
 void sendCcmConfigPage(WiFiClient& client) {
-  sendCommonHead(client, "CCM Config");
+  sendCommonHead(client, L("CCM Config", "CCM設定"));
   client.println("<style>input[type=number]{width:55px}select{width:140px}</style></head><body>");
-  client.println("<h2>CCM Channel Mapping</h2>");
-  client.print(NAV_LINKS); client.println();
-  client.println("<p class=note>Map each relay channel to a UECS-CCM actuator type. Blank = unmapped (inactive).</p>");
-  // Bulk Room/Region setter
-  client.println("<div class=sec><h3>Bulk Set</h3>");
-  client.println("<label>Room: <input type=number id=bulkRoom min=1 max=999 style='width:60px'></label>");
-  client.println(" <button type=button onclick=\"var v=document.getElementById('bulkRoom').value;if(v)for(var i=0;i<8;i++)document.getElementsByName('room'+i)[0].value=v;\">Apply to All</button>");
-  client.println(" &nbsp; <label>Region: <input type=number id=bulkRegion min=1 max=999 style='width:60px'></label>");
-  client.println(" <button type=button onclick=\"var v=document.getElementById('bulkRegion').value;if(v)for(var i=0;i<8;i++)document.getElementsByName('region'+i)[0].value=v;\">Apply to All</button>");
+  client.printf("<h2>%s</h2>\n", L("CCM Channel Mapping", "CCMチャンネル割当"));
+  printNavLinks(client);
+  client.printf("<p class=note>%s</p>\n", L("Map each relay channel to a UECS-CCM actuator type. Blank = unmapped (inactive).",
+    "各リレーチャンネルにUECS-CCMアクチュエータタイプを割り当てます。空白=未割当（無効）。"));
+  client.printf("<div class=sec><h3>%s</h3>\n", L("Bulk Set", "一括設定"));
+  client.printf("<label>%s: <input type=number id=bulkRoom min=1 max=999 style='width:60px'></label>", L("Room","部屋"));
+  client.printf(" <button type=button onclick=\"var v=document.getElementById('bulkRoom').value;if(v)for(var i=0;i<8;i++)document.getElementsByName('room'+i)[0].value=v;\">%s</button>", L("Apply to All","全適用"));
+  client.printf(" &nbsp; <label>%s: <input type=number id=bulkRegion min=1 max=999 style='width:60px'></label>", L("Region","リージョン"));
+  client.printf(" <button type=button onclick=\"var v=document.getElementById('bulkRegion').value;if(v)for(var i=0;i<8;i++)document.getElementsByName('region'+i)[0].value=v;\">%s</button>\n", L("Apply to All","全適用"));
   client.println("</div>");
   client.println("<form action=/api/ccm onsubmit=\"return submitForm(this,this.querySelector('[type=submit]'))\">");
-  client.println("<table><tr><th>CH</th><th>CCM Type</th><th>Room</th><th>Region</th><th>Order</th><th>Priority</th><th>WDT(s)</th><th>DI Link</th></tr>");
+  client.printf("<table><tr><th>CH</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>WDT(s)</th><th>%s</th></tr>\n",
+    L("CCM Type","CCMタイプ"), L("Room","部屋"), L("Region","リージョン"),
+    L("Order","順序"), L("Priority","優先度"), L("DI Link","DIリンク"));
 
   for (int i = 0; i < 8; i++) {
     client.printf("<tr><td>%d</td><td><select name=type%d>", i + 1, i);
@@ -45,9 +47,10 @@ void sendCcmConfigPage(WiFiClient& client) {
   }
 
   client.println("</table>");
-  client.println("<input type=submit value='Save CCM Mapping'>");
+  client.printf("<input type=submit value='%s'>\n", L("Save CCM Mapping","CCM割当を保存"));
   client.println("</form>");
-  client.println("<p class=note>Changes take effect immediately (no reboot required).</p>");
+  client.printf("<p class=note>%s</p>\n", L("Changes take effect immediately (no reboot required).",
+    "変更は即時反映されます（再起動不要）。"));
   client.println("<script>");
   client.print(FORM_JS);
   client.println("</script>");

@@ -78,6 +78,7 @@ void sendAPIState(WiFiClient& client) {
 
   if (mdns_enabled) doc["mdns_hostname"] = mdnsHostname + ".local";
   else              doc["mdns_hostname"] = nullptr;
+  doc["language"] = g_language == 1 ? "jp" : "en";
 
   // Greenhouse control status
   JsonArray ghArr = doc["greenhouse"].to<JsonArray>();
