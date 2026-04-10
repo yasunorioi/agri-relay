@@ -165,6 +165,18 @@ void sendAPIState(WiFiClient& client) {
     co2g["active"] = co2Run.active;
   }
 
+  // CCM InRadiation cache
+  {
+    JsonObject cs = doc["ccm_solar"].to<JsonObject>();
+    if (!isnan(ccmSolar.wm2)) {
+      cs["wm2"]     = round(ccmSolar.wm2 * 10) / 10.0;
+      cs["room"]    = ccmSolar.room;
+      cs["region"]  = ccmSolar.region;
+      cs["order"]   = ccmSolar.order;
+      cs["age_sec"] = ccmSolar.last_rx > 0 ? (int)((millis() - ccmSolar.last_rx) / 1000) : -1;
+    }
+  }
+
   // Last updated time string
   {
     unsigned long ep = getCurrentEpoch();

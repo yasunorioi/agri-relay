@@ -40,6 +40,7 @@ a{color:#d0d6e0}
 <tbody id=dtbl></tbody></table>
 </div>
 <div class=sec id=sens></div>
+<div class=sec id=ccm_solar></div>
 <div class=sec id=gh></div>
 <div class=sec id=irri></div>
 <div class=sec id=prot></div>
@@ -98,6 +99,19 @@ function load(){
     if(d.sensor&&d.sensor.co2!==undefined)sv+='<b>CO2:</b> '+d.sensor.co2+'ppm <b>SCD41:</b> '+d.sensor.scd41_temp.toFixed(1)+'C '+d.sensor.scd41_hum.toFixed(1)+'% ';
     if(d.sensor&&d.sensor.temp===null&&d.sensor.hum===null&&d.sensor.ds18b20_temp===null&&d.sensor.solar_wm2===null&&d.sensor.co2===undefined)sv+='<span class=off>No sensors</span>';
     document.getElementById('sens').innerHTML=sv;
+    var cs=d.ccm_solar;
+    if(cs&&cs.wm2!==undefined){
+      var age=cs.age_sec;
+      var cv='<h3>CCM InRadiation</h3>';
+      if(age<0||age>60){
+        cv+='<span class=off>No data'+(age>0?' ('+age+'s ago)':'')+'</span>';
+      }else{
+        cv+='<b>'+cs.wm2.toFixed(1)+' W/m&sup2;</b>';
+        cv+=' | <span class=ccm>Room'+cs.room+'/Rg'+cs.region+'/O'+cs.order+'</span>';
+        cv+=' | '+age+'s ago';
+      }
+      document.getElementById('ccm_solar').innerHTML=cv;
+    }
     var gh=d.greenhouse||[];
     var anyGh=false;
     for(var i=0;i<gh.length;i++){if(gh[i].enabled)anyGh=true;}

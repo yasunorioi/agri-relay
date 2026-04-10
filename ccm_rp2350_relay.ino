@@ -291,6 +291,10 @@ struct ApertureRuntime {
 ApertureConfig  aptCtrl[APT_SLOTS];
 ApertureRuntime aptRun[APT_SLOTS];
 
+// CCM InRadiation受信キャッシュ
+struct CcmSolarInfo { float wm2; int room; int region; int order; unsigned long last_rx; };
+CcmSolarInfo ccmSolar = {NAN, 0, 0, 0, 0};
+
 // ========== Timing ==========
 const int           SENSOR_INTERVAL      = 10;
 const int           ETH_CONNECT_TIMEOUT  = 15;
@@ -1076,10 +1080,15 @@ void ccmReceive() {
     }
 
     // CCM sensor reception: InRadiation → use as solar input for irrigation
-    if (strcmp(baseType, "InRadiation") == 0 && !ads1110_detected) {
+    if (strcmp(baseType, "InRadiation") == 0) {
       float wm2 = atof(valBuf);
       if (wm2 >= 0.0 && wm2 <= 2000.0) {
-        g_solar_wm2 = wm2;
+        if (!ads1110_detected) g_solar_wm2 = wm2;
+        ccmSolar.wm2     = wm2;
+        ccmSolar.room    = room;
+        ccmSolar.region  = region;
+        ccmSolar.order   = order;
+        ccmSolar.last_rx = millis();
         Serial.printf("CCM RX: InRadiation=%.1f W/m2 (room=%d)\n", wm2, room);
       }
     }
