@@ -17,22 +17,22 @@ void sendProtectionPage(WiFiClient& client) {
   client.printf("<p class=note>%s</p>\n", L("Runs circulation fan / heater before sunrise to prevent condensation.",
     "結露防止のため、日の出前に循環ファン/ヒーターを稼働します。"));
   client.println("<table>");
-  client.printf("<tr><th>Enable</th><td><input type=checkbox name=dew_en value=1%s></td></tr>\n", dewCtrl.enabled ? " checked" : "");
-  client.printf("<tr><th>Latitude</th><td><input type=number name=lat value=%.4f min=-90 max=90 step=0.01></td></tr>\n", dewCtrl.latitude);
-  client.printf("<tr><th>Longitude</th><td><input type=number name=lon value=%.4f min=-180 max=180 step=0.01></td></tr>\n", dewCtrl.longitude);
-  client.printf("<tr><th>Timezone (UTC+)</th><td><input type=number name=tz value=%d min=-12 max=14></td></tr>\n", dewCtrl.timezone_h);
-  client.printf("<tr><th>Before sunrise (min)</th><td><input type=number name=bmin value=%d min=0 max=180></td></tr>\n", dewCtrl.before_sunrise_min);
-  client.printf("<tr><th>After sunrise (min)</th><td><input type=number name=amin value=%d min=0 max=180></td></tr>\n", dewCtrl.after_sunrise_min);
+  client.printf("<tr><th>%s</th><td><input type=checkbox name=dew_en aria-label='%s' value=1%s></td></tr>\n", L("Enable","有効"), L("Enable dew prevention","結露対策を有効"), dewCtrl.enabled ? " checked" : "");
+  client.printf("<tr><th>%s</th><td><input type=number name=lat value=%.4f min=-90 max=90 step=0.01></td></tr>\n", L("Latitude","緯度"), dewCtrl.latitude);
+  client.printf("<tr><th>%s</th><td><input type=number name=lon value=%.4f min=-180 max=180 step=0.01></td></tr>\n", L("Longitude","経度"), dewCtrl.longitude);
+  client.printf("<tr><th>%s</th><td><input type=number name=tz value=%d min=-12 max=14></td></tr>\n", L("Timezone (UTC+)","タイムゾーン (UTC+)"), dewCtrl.timezone_h);
+  client.printf("<tr><th>%s</th><td><input type=number name=bmin value=%d min=0 max=180></td></tr>\n", L("Before sunrise (min)","日の出前(分)"), dewCtrl.before_sunrise_min);
+  client.printf("<tr><th>%s</th><td><input type=number name=amin value=%d min=0 max=180></td></tr>\n", L("After sunrise (min)","日の出後(分)"), dewCtrl.after_sunrise_min);
 
   // Fan relay select
-  client.printf("<tr><th>Fan relay</th><td><select name=dfan>");
+  client.printf("<tr><th>%s</th><td><select name=dfan>", L("Fan relay","ファンリレー"));
   client.printf("<option value=-1%s>-</option>", dewCtrl.fan_relay_ch < 0 ? " selected" : "");
   for (int c = 0; c < 8; c++)
     client.printf("<option value=%d%s>CH%d</option>", c, dewCtrl.fan_relay_ch == c ? " selected" : "", c + 1);
   client.printf("</select></td></tr>\n");
 
   // Heater relay select
-  client.printf("<tr><th>Heater relay</th><td><select name=dheat>");
+  client.printf("<tr><th>%s</th><td><select name=dheat>", L("Heater relay","ヒーターリレー"));
   client.printf("<option value=-1%s>-</option>", dewCtrl.heater_relay_ch < 0 ? " selected" : "");
   for (int c = 0; c < 8; c++)
     client.printf("<option value=%d%s>CH%d</option>", c, dewCtrl.heater_relay_ch == c ? " selected" : "", c + 1);
@@ -43,33 +43,33 @@ void sendProtectionPage(WiFiClient& client) {
   client.printf("<p class=note>%s</p>\n", L("Activates fan when temperature rises too fast (e.g. sudden sun exposure).",
     "温度が急上昇した際（例：急激な日射）にファンを稼働します。"));
   client.println("<table>");
-  client.printf("<tr><th>Enable</th><td><input type=checkbox name=rate_en value=1%s></td></tr>\n", rateGuard.enabled ? " checked" : "");
-  client.printf("<tr><th>Threshold (C/min)</th><td><input type=number name=rthr value=%.1f min=0.5 max=10 step=0.1></td></tr>\n", rateGuard.rate_threshold);
+  client.printf("<tr><th>%s</th><td><input type=checkbox name=rate_en aria-label='%s' value=1%s></td></tr>\n", L("Enable","有効"), L("Enable rate guard","温度急変対策を有効"), rateGuard.enabled ? " checked" : "");
+  client.printf("<tr><th>%s</th><td><input type=number name=rthr value=%.1f min=0.5 max=10 step=0.1></td></tr>\n", L("Threshold (C/min)","閾値(C/min)"), rateGuard.rate_threshold);
 
   // Sensor select
-  client.printf("<tr><th>Sensor</th><td><select name=rsrc>");
+  client.printf("<tr><th>%s</th><td><select name=rsrc>", L("Sensor","センサー"));
   client.printf("<option value=0%s>SHT40</option>", rateGuard.sensor_src == 0 ? " selected" : "");
   client.printf("<option value=1%s>DS18B20</option>", rateGuard.sensor_src == 1 ? " selected" : "");
   client.printf("</select></td></tr>\n");
 
   // Fan relay
-  client.printf("<tr><th>Fan relay</th><td><select name=rfan>");
+  client.printf("<tr><th>%s</th><td><select name=rfan>", L("Fan relay","ファンリレー"));
   client.printf("<option value=-1%s>-</option>", rateGuard.fan_relay_ch < 0 ? " selected" : "");
   for (int c = 0; c < 8; c++)
     client.printf("<option value=%d%s>CH%d</option>", c, rateGuard.fan_relay_ch == c ? " selected" : "", c + 1);
   client.printf("</select></td></tr>\n");
 
-  client.printf("<tr><th>Hold time (s)</th><td><input type=number name=rhld value=%d min=30 max=600></td></tr>\n", rateGuard.hold_sec);
+  client.printf("<tr><th>%s</th><td><input type=number name=rhld value=%d min=30 max=600></td></tr>\n", L("Hold time (s)","保持時間(s)"), rateGuard.hold_sec);
   client.println("</table></fieldset>");
 
   client.printf("<fieldset><legend>%s</legend>\n", L("CO2 Guard (requires SCD41)", "CO2ガード（SCD41必要）"));
   client.println("<table>");
-  client.printf("<tr><th>Enable</th><td><input type=checkbox name=co2_en value=1%s></td></tr>\n", co2Guard.enabled ? " checked" : "");
-  client.printf("<tr><th>Threshold (ppm)</th><td><input type=number name=co2thr value=%d min=50 max=1000></td></tr>\n", co2Guard.threshold_ppm);
+  client.printf("<tr><th>%s</th><td><input type=checkbox name=co2_en aria-label='%s' value=1%s></td></tr>\n", L("Enable","有効"), L("Enable CO2 guard","CO2ガードを有効"), co2Guard.enabled ? " checked" : "");
+  client.printf("<tr><th>%s</th><td><input type=number name=co2thr value=%d min=50 max=1000></td></tr>\n", L("Threshold (ppm)","閾値(ppm)"), co2Guard.threshold_ppm);
   client.println("</table>");
   client.printf("<p class=note>%s</p>\n", L("Actions: when CO2 &le; threshold, each relay turns ON for its own duration.",
     "動作: CO2が閾値以下になると各リレーが指定時間ONになります。"));
-  client.println("<table><tr><th>#</th><th>Relay CH</th><th>Duration(s)</th></tr>");
+  client.printf("<table><tr><th>#</th><th>%s</th><th>%s</th></tr>\n", L("Relay CH","リレーCH"), L("Duration(s)","持続時間(s)"));
   for (int i = 0; i < CO2_GUARD_ACTIONS; i++) {
     client.printf("<tr><td>%d</td><td><select name=ca%d>", i + 1, i);
     client.printf("<option value=-1%s>-</option>", co2Guard.actions[i].relay_ch < 0 ? " selected" : "");

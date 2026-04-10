@@ -16,7 +16,7 @@ void sendIrrigationPage(WiFiClient& client) {
   client.println("<div class=sec id=irrirun>Loading...</div>");
 
   // Config form
-  client.println("<h3>Settings</h3>");
+  client.printf("<h3>%s</h3>\n", L("Settings","設定"));
   client.println("<form action=/api/irrigation onsubmit=\"return irriSubmit(this,this.querySelector('[type=submit]'))\">");
   client.printf("<table><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>Min W/m&sup2;</th></tr>\n",
     L("Rule","ルール"), L("Enable","有効"), L("Relay CH","リレーCH"),

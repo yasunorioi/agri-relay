@@ -46,7 +46,7 @@ void sendGreenhousePage(WiFiClient& client) {
     // Table points
     client.printf("<span id=ct%d class=curve-extra><br>", i);
     client.printf("<label>Points:<input type=number name=cpn%d value=%d min=2 max=%d></label><br>", i, ghCtrl[i].curve_point_count, MAX_CURVE_POINTS);
-    client.println("<table><tr><th>Temp(C)</th><th>Duty%</th></tr>");
+    client.printf("<table><tr><th>%s</th><th>%s</th></tr>\n", L("Temp(C)","温度(C)"), L("Duty%","開度%"));
     for (int p = 0; p < MAX_CURVE_POINTS; p++) {
       float t = (p < ghCtrl[i].curve_point_count) ? ghCtrl[i].curve_points[p].temp : (ghCtrl[i].temp_open + p * (ghCtrl[i].temp_full - ghCtrl[i].temp_open) / (MAX_CURVE_POINTS-1));
       float pct = (p < ghCtrl[i].curve_point_count) ? ghCtrl[i].curve_points[p].pct : (p * 100.0 / (MAX_CURVE_POINTS-1));
@@ -85,7 +85,7 @@ void sendGreenhousePage(WiFiClient& client) {
       client.printf("<option value=%d%s>DI%d</option>", d, aptCtrl[i].limit_di == d ? " selected" : "", d + 1);
     client.printf("</select><br>");
     client.printf("<label>Segments:<input type=number name=apt_sn%d value=%d min=2 max=%d></label><br>", i, aptCtrl[i].segment_count, MAX_APT_SEGMENTS);
-    client.println("<table><tr><th>From%</th><th>To%</th><th>Sec</th></tr>");
+    client.printf("<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>\n", L("From%","開始%"), L("To%","終了%"), L("Sec","秒"));
     for (int j = 0; j < MAX_APT_SEGMENTS; j++) {
       client.printf("<tr><td><input type=number name=apt_sf%d_%d value=%.0f min=0 max=100></td>", i, j, aptCtrl[i].segments[j].from_pct);
       client.printf("<td><input type=number name=apt_st%d_%d value=%.0f min=0 max=100></td>", i, j, aptCtrl[i].segments[j].to_pct);

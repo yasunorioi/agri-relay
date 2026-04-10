@@ -1,61 +1,20 @@
 #pragma once
 
 // ============================================================
-// WebUI — Dashboard HTML
+// WebUI — Dashboard
 // ============================================================
-static const char HTML_PAGE[] = R"RELAY_HTML(
-<!DOCTYPE html>
-<html><head>
-<meta charset=UTF-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>CCM Relay Node</title>
-<style>
-body{font-family:sans-serif;margin:16px;background:#0f1011;color:#f7f8f8}
-h2{color:#5e6ad2;margin:0 0 10px}h3{color:#d0d6e0;margin:6px 0}
-table{border-collapse:collapse;width:100%;margin:6px 0}
-th,td{border:1px solid #2e2e2e;padding:5px 8px}
-th{background:#191a1b;color:#d0d6e0}
-.on{color:#66bb6a;font-weight:bold}.off{color:#ef5350}
-.bon{background:#43a047;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer}
-.bof{background:#e53935;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer}
-.sec{background:#191a1b;border-radius:6px;padding:12px;margin:8px 0}
-input[type=number]{width:55px;padding:3px;background:#1a1a1f;color:#eee;border:1px solid #3e3e44;border-radius:3px}
-a{color:#d0d6e0}
-.ccm{color:#ffa726;font-size:0.85em}
-@media(max-width:600px){table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}body{margin:8px}}
-</style>
-</head><body>
-<h2>CCM Relay Node (UECS)</h2>
-<div class=sec id=sys></div>
-<div class=sec id=net></div>
-<div class=sec id=devstat></div>
-<div class=sec>
-<h3>Relay / CCM Mapping</h3>
-<table><tr><th>CH</th><th>CCM Type</th><th>Room</th><th>State</th><th>Control</th></tr>
-<tbody id=rtbl></tbody></table>
-</div>
-<div class=sec>
-<h3>Digital Input</h3>
-<table><tr><th>CH</th><th>State</th></tr>
-<tbody id=dtbl></tbody></table>
-</div>
-<div class=sec id=sens></div>
-<div class=sec id=ccm_solar></div>
-<div class=sec id=gh></div>
-<div class=sec id=irri></div>
-<div class=sec id=prot></div>
-<script>
+static const char DASHBOARD_JS[] PROGMEM = R"DASH_JS(
 function relay(ch,v){
   fetch('/api/relay/'+ch,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:v})}).then(load);
 }
 function load(){
   fetch('/api/state').then(function(r){return r.json();}).then(function(d){
     var T=d.language==='jp'?{
-      net:'ネットワーク',devstat:'デバイス状態',sensors:'センサー',
-      on:'オン',off:'オフ',gh:'温室制御',irri:'日射灌水',prot:'保護制御',
-      settings:'設定',notcfg:'未設定',watering:'灌水中',accum:'積算中',
-      norules:'ルール未設定',active:'稼働中',standby:'待機中',normal:'正常',
-      configure:'設定する',solar:'日射',irriSolar:'日射灌水'
+      net:'\u30cd\u30c3\u30c8\u30ef\u30fc\u30af',devstat:'\u30c7\u30d0\u30a4\u30b9\u72b6\u614b',sensors:'\u30bb\u30f3\u30b5\u30fc',
+      on:'\u30aa\u30f3',off:'\u30aa\u30d5',gh:'\u6e29\u5ba4\u5236\u5fa1',irri:'\u65e5\u5c04\u704c\u6c34',prot:'\u4fdd\u8b77\u5236\u5fa1',
+      settings:'\u8a2d\u5b9a',notcfg:'\u672a\u8a2d\u5b9a',watering:'\u704c\u6c34\u4e2d',accum:'\u7a4d\u7b97\u4e2d',
+      norules:'\u30eb\u30fc\u30eb\u672a\u8a2d\u5b9a',active:'\u7a3c\u50cd\u4e2d',standby:'\u5f85\u6a5f\u4e2d',normal:'\u6b63\u5e38',
+      configure:'\u8a2d\u5b9a\u3059\u308b',solar:'\u65e5\u5c04',irriSolar:'\u65e5\u5c04\u704c\u6c34'
     }:{
       net:'Network',devstat:'Device Status',sensors:'Sensors',
       on:'ON',off:'OFF',gh:'Greenhouse Control',irri:'Solar Irrigation',prot:'Protection',
@@ -142,7 +101,7 @@ function load(){
       gv+='</table><p><a href="/greenhouse">'+T.settings+'</a></p>';
       document.getElementById('gh').innerHTML=gv;
     } else {
-      document.getElementById('gh').innerHTML='<h3>'+T.gh+'</h3><span class=off>'+T.norules+'</span> — <a href="/greenhouse">'+T.configure+'</a>';
+      document.getElementById('gh').innerHTML='<h3>'+T.gh+'</h3><span class=off>'+T.norules+'</span> \u2014 <a href="/greenhouse">'+T.configure+'</a>';
     }
     var ir=d.irrigation||[];
     var anyIr=false;
@@ -159,7 +118,7 @@ function load(){
       iv+='</table><p><a href="/irrigation">'+T.settings+'</a></p>';
       document.getElementById('irri').innerHTML=iv;
     } else {
-      document.getElementById('irri').innerHTML='<h3>'+T.irriSolar+'</h3><span class=off>'+T.notcfg+'</span> — <a href="/irrigation">'+T.configure+'</a>';
+      document.getElementById('irri').innerHTML='<h3>'+T.irriSolar+'</h3><span class=off>'+T.notcfg+'</span> \u2014 <a href="/irrigation">'+T.configure+'</a>';
     }
     var p=d.protection||{};
     var pv='<h3>'+T.prot+'</h3>';
@@ -171,22 +130,43 @@ function load(){
     if(p.rate&&p.rate.enabled){anyP=true;
       pv+='<b>Rate Guard:</b> '+(p.rate.active?'<span class=on>\u2713 ACTIVE</span>':'\u2717 Normal');
       if(p.rate.current_rate!==null)pv+=' ('+p.rate.current_rate.toFixed(1)+'C/min)';}
-    if(anyP){pv+=' — <a href="/protection">'+T.settings+'</a>';
+    if(anyP){pv+=' \u2014 <a href="/protection">'+T.settings+'</a>';
       document.getElementById('prot').innerHTML=pv;
     }else{
-      document.getElementById('prot').innerHTML='<h3>'+T.prot+'</h3><span class=off>'+T.notcfg+'</span> — <a href="/protection">'+T.configure+'</a>';
+      document.getElementById('prot').innerHTML='<h3>'+T.prot+'</h3><span class=off>'+T.notcfg+'</span> \u2014 <a href="/protection">'+T.configure+'</a>';
     }
   });
 }
 load();setInterval(load,5000);
-</script>
-</body></html>
-)RELAY_HTML";
+)DASH_JS";
 
 void sendDashboard(WiFiClient& client) {
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: text/html; charset=UTF-8");
-  client.println("Connection: close");
-  client.println();
-  client.print(HTML_PAGE);
+  sendCommonHead(client, L("CCM Relay Node", "CCMリレーノード"));
+  client.println("<style>"
+    ".bon{background:#43a047;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer}"
+    ".bof{background:#e53935;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer}"
+    ".ccm{color:#ffa726;font-size:0.85em}"
+    "</style></head><body>");
+  client.printf("<h2>%s</h2>\n", L("CCM Relay Node (UECS)", "CCMリレーノード (UECS)"));
+  printNavLinks(client);
+  client.println("<div class=sec id=sys></div>");
+  client.println("<div class=sec id=net></div>");
+  client.println("<div class=sec id=devstat></div>");
+  client.println("<div class=sec>");
+  client.printf("<h3>%s</h3>\n", L("Relay / CCM Mapping", "リレー/CCM割当"));
+  client.printf("<table><tr><th>CH</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr>\n",
+    L("CCM Type","CCMタイプ"), L("Room","部屋"), L("State","状態"), L("Control","制御"));
+  client.println("<tbody id=rtbl></tbody></table></div>");
+  client.println("<div class=sec>");
+  client.printf("<h3>%s</h3>\n", L("Digital Input", "デジタル入力"));
+  client.printf("<table><tr><th>CH</th><th>%s</th></tr>\n", L("State","状態"));
+  client.println("<tbody id=dtbl></tbody></table></div>");
+  client.println("<div class=sec id=sens></div>");
+  client.println("<div class=sec id=ccm_solar></div>");
+  client.println("<div class=sec id=gh></div>");
+  client.println("<div class=sec id=irri></div>");
+  client.println("<div class=sec id=prot></div>");
+  client.println("<script>");
+  client.print(DASHBOARD_JS);
+  client.println("</script></body></html>");
 }
