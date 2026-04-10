@@ -26,8 +26,7 @@ function load(){
       '<b>Node:</b> '+d.node_id+' | <b>FW:</b> '+d.version+
       ' | <b>Protocol:</b> <span style="color:#ffa726">UECS-CCM</span>'+
       ' | <b>Uptime:</b> '+d.uptime+'s'+
-      ' | <b>Last:</b> '+(d.last_updated||'-')+
-      ' | <a href="/ccm">CCM</a> | <a href="/greenhouse">Greenhouse</a> | <a href="/irrigation">Irrigation</a> | <a href="/protection">Protection</a> | <a href="/config">Network</a> | <a href="/ota">FW</a>';
+      ' | <b>Last:</b> '+(d.last_updated||'-');
     var mdnsHost=d.mdns_hostname?(' | <b>mDNS:</b> '+d.mdns_hostname):'';
     document.getElementById('net').innerHTML=
       '<h3>'+T.net+'</h3><b>IP:</b> '+d.ip+
