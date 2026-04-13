@@ -1,0 +1,21 @@
+% agri-relay operation manual: PDF layout fixes
+% Included via: pandoc -H docs/pdf-header.tex
+
+% --- Code block line-breaking ---
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{%
+  breaklines,breakanywhere,commandchars=\\\{\}}
+
+% --- URL line-breaking at any character ---
+\usepackage{xurl}
+
+% --- Japanese line-breaking (XeTeX) ---
+\XeTeXlinebreaklocale "ja"
+\XeTeXlinebreakskip = 0pt plus 1pt
+
+% --- Prevent overfull hboxes globally ---
+\sloppy
+\setlength{\emergencystretch}{3em}
+
+% --- Table row spacing ---
+\renewcommand{\arraystretch}{1.3}
