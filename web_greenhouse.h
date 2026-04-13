@@ -60,8 +60,8 @@ void sendGreenhousePage(WiFiClient& client) {
   client.println("</form></div>");
 
   client.printf("<div class=sec><h3>%s</h3>\n", L("Side Window Aperture", "側窓開度制御"));
-  client.printf("<p class=note>%s</p>\n", L("Time-based aperture control. Define open/close durations per %% range.",
-    "時間ベースの開度制御。%%範囲ごとに開閉時間を設定します。"));
+  client.printf("<p class=note>%s</p>\n", L("Time-based aperture control. Specify open/close duration in seconds.",
+    "時間ベースの開度制御。開・閉それぞれの動作秒数を指定します。"));
   client.println("<form id=aptform action=/api/aperture onsubmit=\"return submitForm(this,this.querySelector('[type=submit]'))\">");
   for (int i = 0; i < APT_SLOTS; i++) {
     client.printf("<div class=sec><b>Slot %d</b><br>", i + 1);
@@ -84,14 +84,9 @@ void sendGreenhousePage(WiFiClient& client) {
     for (int d = 0; d < 8; d++)
       client.printf("<option value=%d%s>DI%d</option>", d, aptCtrl[i].limit_di == d ? " selected" : "", d + 1);
     client.printf("</select><br>");
-    client.printf("<label>Segments:<input type=number name=apt_sn%d value=%d min=2 max=%d></label><br>", i, aptCtrl[i].segment_count, MAX_APT_SEGMENTS);
-    client.printf("<table><tr><th>%s</th><th>%s</th><th>%s</th></tr>\n", L("From%","開始%"), L("To%","終了%"), L("Sec","秒"));
-    for (int j = 0; j < MAX_APT_SEGMENTS; j++) {
-      client.printf("<tr><td><input type=number name=apt_sf%d_%d value=%.0f min=0 max=100></td>", i, j, aptCtrl[i].segments[j].from_pct);
-      client.printf("<td><input type=number name=apt_st%d_%d value=%.0f min=0 max=100></td>", i, j, aptCtrl[i].segments[j].to_pct);
-      client.printf("<td><input type=number name=apt_ss%d_%d value=%d min=0 max=300></td></tr>", i, j, aptCtrl[i].segments[j].seconds);
-    }
-    client.println("</table></div>");
+    client.printf("<label>%s:<input type=number name=apt_os%d value=%d min=1 max=300></label> ", L("Open(s)","開(秒)"), i, aptCtrl[i].open_seconds);
+    client.printf("<label>%s:<input type=number name=apt_cs%d value=%d min=1 max=300></label>", L("Close(s)","閉(秒)"), i, aptCtrl[i].close_seconds);
+    client.println("</div>");
   }
   client.printf("<input type=submit value='%s'>\n", L("Save Aperture","開度設定を保存"));
   client.println("</form></div>");
@@ -234,16 +229,10 @@ void handleAperturePost(WiFiClient& client, const String& body) {
     if (cc.length() > 0) aptCtrl[i].close_ch = cc.toInt();
     String di = getField(String("apt_di") + i);
     if (di.length() > 0) aptCtrl[i].limit_di = di.toInt();
-    String sn = getField(String("apt_sn") + i);
-    if (sn.length() > 0) aptCtrl[i].segment_count = constrain(sn.toInt(), 2, MAX_APT_SEGMENTS);
-    for (int j = 0; j < MAX_APT_SEGMENTS; j++) {
-      String sf = getField(String("apt_sf") + i + "_" + j);
-      if (sf.length() > 0) aptCtrl[i].segments[j].from_pct = constrain(sf.toFloat(), 0.0, 100.0);
-      String st = getField(String("apt_st") + i + "_" + j);
-      if (st.length() > 0) aptCtrl[i].segments[j].to_pct = constrain(st.toFloat(), 0.0, 100.0);
-      String ss = getField(String("apt_ss") + i + "_" + j);
-      if (ss.length() > 0) aptCtrl[i].segments[j].seconds = constrain(ss.toInt(), 0, 300);
-    }
+    String os = getField(String("apt_os") + i);
+    if (os.length() > 0) aptCtrl[i].open_seconds = constrain(os.toInt(), 1, 300);
+    String cs = getField(String("apt_cs") + i);
+    if (cs.length() > 0) aptCtrl[i].close_seconds = constrain(cs.toInt(), 1, 300);
     // Re-initialize on config change
     if (aptCtrl[i].enabled) {
       aptRun[i].initializing = true;

@@ -260,21 +260,14 @@ struct CO2GuardRuntime {
 CO2GuardRuntime co2Run = {};
 
 // ========== Aperture (Side Window) Control ==========
-// 開度テーブルに基づく側窓開閉時間管理
-struct ApertureSegment {
-  float from_pct;    // 開始開度%
-  float to_pct;      // 終了開度%
-  int   seconds;     // この区間の所要秒数
-};
-const int MAX_APT_SEGMENTS = 5;
-
+// 開/閉それぞれの動作秒数で側窓開度を制御
 struct ApertureConfig {
   bool  enabled;           // 開度管理有効
   int   ch;                // 開方向リレーch (0-7)
   int   close_ch;          // 閉方向リレーch (-1=開chのOFF=閉)
   int   limit_di;          // リミットSW DIch (-1=無効)
-  int   segment_count;     // 使用区間数 (2-5)
-  ApertureSegment segments[MAX_APT_SEGMENTS];
+  int   open_seconds;      // 全閉→全開の所要秒数
+  int   close_seconds;     // 全開→全閉の所要秒数
 };
 const int APT_SLOTS = 4;
 
@@ -1198,10 +1191,8 @@ void loadApertureConfig() {
     aptCtrl[i].ch            = -1;
     aptCtrl[i].close_ch      = -1;
     aptCtrl[i].limit_di      = -1;
-    aptCtrl[i].segment_count = 2;
-    aptCtrl[i].segments[0]   = {0.0, 50.0, 30};
-    aptCtrl[i].segments[1]   = {50.0, 100.0, 30};
-    for (int j = 2; j < MAX_APT_SEGMENTS; j++) aptCtrl[i].segments[j] = {0, 0, 0};
+    aptCtrl[i].open_seconds  = 60;
+    aptCtrl[i].close_seconds = 60;
     aptRun[i] = {0.0, 0.0, false, false, 0, 0, false};
   }
   if (!LittleFS.exists("/aperture.json")) return;
@@ -1218,16 +1209,8 @@ void loadApertureConfig() {
     aptCtrl[idx].ch            = s["ch"]       | -1;
     aptCtrl[idx].close_ch      = s["close_ch"] | -1;
     aptCtrl[idx].limit_di      = s["limit_di"] | -1;
-    aptCtrl[idx].segment_count = constrain((int)(s["seg_count"] | 2), 2, MAX_APT_SEGMENTS);
-    JsonArray segs = s["segments"].as<JsonArray>();
-    int si = 0;
-    for (JsonObject sg : segs) {
-      if (si >= MAX_APT_SEGMENTS) break;
-      aptCtrl[idx].segments[si].from_pct = sg["from"] | 0.0;
-      aptCtrl[idx].segments[si].to_pct   = sg["to"]   | 0.0;
-      aptCtrl[idx].segments[si].seconds  = sg["sec"]  | 0;
-      si++;
-    }
+    aptCtrl[idx].open_seconds  = constrain((int)(s["open_sec"]  | 60), 1, 300);
+    aptCtrl[idx].close_seconds = constrain((int)(s["close_sec"] | 60), 1, 300);
     idx++;
   }
 }
@@ -1241,14 +1224,8 @@ void saveApertureConfig() {
     s["ch"]        = aptCtrl[i].ch;
     s["close_ch"]  = aptCtrl[i].close_ch;
     s["limit_di"]  = aptCtrl[i].limit_di;
-    s["seg_count"] = aptCtrl[i].segment_count;
-    JsonArray segs = s["segments"].to<JsonArray>();
-    for (int j = 0; j < aptCtrl[i].segment_count; j++) {
-      JsonObject sg = segs.add<JsonObject>();
-      sg["from"] = aptCtrl[i].segments[j].from_pct;
-      sg["to"]   = aptCtrl[i].segments[j].to_pct;
-      sg["sec"]  = aptCtrl[i].segments[j].seconds;
-    }
+    s["open_sec"]  = aptCtrl[i].open_seconds;
+    s["close_sec"] = aptCtrl[i].close_seconds;
   }
   File f = LittleFS.open("/aperture.json", "w");
   if (!f) return;
@@ -1256,27 +1233,14 @@ void saveApertureConfig() {
   f.close();
 }
 
-// 開度fromからtoへの所要時間(ms)を区間テーブルから計算
+// 開度fromからtoへの所要時間(ms)を線形比例で計算
 float calcMoveDuration(int slot, float from_pct, float to_pct) {
   if (slot < 0 || slot >= APT_SLOTS) return 0;
   float dist = fabsf(to_pct - from_pct);
   if (dist < 0.1) return 0;
-  float total_ms = 0;
-  float lo = min(from_pct, to_pct);
-  float hi = max(from_pct, to_pct);
-  for (int j = 0; j < aptCtrl[slot].segment_count; j++) {
-    float seg_lo = aptCtrl[slot].segments[j].from_pct;
-    float seg_hi = aptCtrl[slot].segments[j].to_pct;
-    if (seg_lo > seg_hi) { float tmp = seg_lo; seg_lo = seg_hi; seg_hi = tmp; }
-    float overlap_lo = max(lo, seg_lo);
-    float overlap_hi = min(hi, seg_hi);
-    if (overlap_hi <= overlap_lo) continue;
-    float seg_span = seg_hi - seg_lo;
-    if (seg_span < 0.1) continue;
-    float frac = (overlap_hi - overlap_lo) / seg_span;
-    total_ms += frac * aptCtrl[slot].segments[j].seconds * 1000.0;
-  }
-  return total_ms;
+  bool opening = (to_pct > from_pct);
+  int total_sec = opening ? aptCtrl[slot].open_seconds : aptCtrl[slot].close_seconds;
+  return (dist / 100.0) * total_sec * 1000.0;
 }
 
 void setTargetAperture(int slot, float target_pct) {
@@ -1335,7 +1299,7 @@ void apertureControl(unsigned long now) {
       // 初期化中: 全閉方向に動作
       if (!aptRun[i].moving) {
         float dur_ms = calcMoveDuration(i, aptRun[i].current_pct, 0.0);
-        if (dur_ms < 100) dur_ms = aptCtrl[i].segments[0].seconds * 1000.0 * 2;
+        if (dur_ms < 100) dur_ms = aptCtrl[i].close_seconds * 1000.0;
         aptRun[i].moving = true;
         aptRun[i].opening = false;
         aptRun[i].move_start = now;

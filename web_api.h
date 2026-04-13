@@ -108,14 +108,8 @@ void sendAPIState(WiFiClient& client) {
     a["target_pct"]  = round(aptRun[i].target_pct * 10) / 10.0;
     a["moving"]      = aptRun[i].moving;
     a["initializing"] = aptRun[i].initializing;
-    a["seg_count"]   = aptCtrl[i].segment_count;
-    JsonArray segs = a["segments"].to<JsonArray>();
-    for (int j = 0; j < aptCtrl[i].segment_count; j++) {
-      JsonObject sg = segs.add<JsonObject>();
-      sg["from"] = aptCtrl[i].segments[j].from_pct;
-      sg["to"]   = aptCtrl[i].segments[j].to_pct;
-      sg["sec"]  = aptCtrl[i].segments[j].seconds;
-    }
+    a["open_sec"]    = aptCtrl[i].open_seconds;
+    a["close_sec"]   = aptCtrl[i].close_seconds;
   }
 
   // Irrigation control status
