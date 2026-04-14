@@ -8,7 +8,7 @@ void sendAPIState(WiFiClient& client) {
   doc["node_id"]    = nodeId;
   doc["node_name"]  = nodeName;
   doc["version"]    = FW_VERSION;
-  doc["protocol"]   = "UECS-CCM";
+  doc["protocol"]   = "MQTT";
   doc["uptime"]     = millis() / 1000;
   doc["ts"]         = getCurrentEpoch();
   doc["relay_state"] = relayState;
@@ -26,17 +26,13 @@ void sendAPIState(WiFiClient& client) {
   }
   doc["di_state"]   = diBits;
 
-  // CCM mapping
-  JsonArray ccmArr = doc["ccm_map"].to<JsonArray>();
+  // Relay channel config (DI link)
+  JsonArray rchArr = doc["relay_ch"].to<JsonArray>();
   for (int i = 0; i < 8; i++) {
-    JsonObject m = ccmArr.add<JsonObject>();
-    m["type"]     = ccmMap[i].ccmType;
-    m["room"]     = ccmMap[i].room;
-    m["region"]   = ccmMap[i].region;
-    m["order"]    = ccmMap[i].order;
-    m["priority"]     = ccmMap[i].priority;
-    m["watchdog_sec"] = ccmMap[i].watchdog_sec;
-    m["last_rx_ago"]  = lastCcmRx[i] > 0 ? (int)((millis() - lastCcmRx[i]) / 1000) : -1;
+    JsonObject m = rchArr.add<JsonObject>();
+    m["di_link"]      = relayCh[i].di_link;
+    m["di_invert"]    = relayCh[i].di_invert;
+    m["watchdog_sec"] = relayCh[i].watchdog_sec;
   }
 
   // Sensor
@@ -165,16 +161,13 @@ void sendAPIState(WiFiClient& client) {
     co2g["active"] = co2Run.active;
   }
 
-  // CCM InRadiation cache
+  // MQTT status
   {
-    JsonObject cs = doc["ccm_solar"].to<JsonObject>();
-    if (!isnan(ccmSolar.wm2)) {
-      cs["wm2"]     = round(ccmSolar.wm2 * 10) / 10.0;
-      cs["room"]    = ccmSolar.room;
-      cs["region"]  = ccmSolar.region;
-      cs["order"]   = ccmSolar.order;
-      cs["age_sec"] = ccmSolar.last_rx > 0 ? (int)((millis() - ccmSolar.last_rx) / 1000) : -1;
-    }
+    JsonObject mqttObj = doc["mqtt"].to<JsonObject>();
+    mqttObj["connected"] = mqttClient.connected();
+    mqttObj["broker"]    = mqttCfg.broker;
+    mqttObj["house_id"]  = mqttCfg.house_id;
+    mqttObj["client_id"] = mqttCfg.client_id;
   }
 
   // Last updated time string

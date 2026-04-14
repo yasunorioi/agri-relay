@@ -24,16 +24,16 @@ function load(){
     };
     document.getElementById('sys').innerHTML=
       '<b>Node:</b> '+d.node_id+' | <b>FW:</b> '+d.version+
-      ' | <b>Protocol:</b> <span style="color:#ffa726">UECS-CCM</span>'+
+      ' | <b>Protocol:</b> <span style="color:#29b6f6">MQTT</span>'+
       ' | <b>Uptime:</b> '+d.uptime+'s'+
       ' | <b>Last:</b> '+(d.last_updated||'-');
     var mdnsHost=d.mdns_hostname?(' | <b>mDNS:</b> '+d.mdns_hostname):'';
+    var mqttInfo=d.mqtt?(' | <b>MQTT:</b> '+(d.mqtt.connected?'<span class=badge-ok>'+d.mqtt.broker+' \u2713</span>':'<span class=badge-ng>offline \u2717</span>')):'';
     document.getElementById('net').innerHTML=
       '<h3>'+T.net+'</h3><b>IP:</b> '+d.ip+
       ' | <b>GW:</b> '+d.gateway+mdnsHost+
-      '<br><b>MAC:</b> '+d.mac+
-      ' | <b>CCM:</b> 224.0.0.1:16520';
-    var solSrc=d.ads1110_ok?'<span class=badge-ok>ADS1110 \u2713</span>':(d.sensor&&d.sensor.solar_wm2!==null?'<span class=badge-ok>CCM \u2713</span>':'<span class=badge-ng>none \u2717</span>');
+      '<br><b>MAC:</b> '+d.mac+mqttInfo;
+    var solSrc=d.ads1110_ok?'<span class=badge-ok>ADS1110 \u2713</span>':(d.sensor&&d.sensor.solar_wm2!==null?'<span class=badge-ok>MQTT \u2713</span>':'<span class=badge-ng>none \u2717</span>');
     var solVal=(d.sensor&&d.sensor.solar_wm2!==null)?' '+d.sensor.solar_wm2.toFixed(0)+'W/m&sup2;':'';
     document.getElementById('devstat').innerHTML=
       '<h3>'+T.devstat+'</h3>'+
@@ -43,14 +43,12 @@ function load(){
       ' | <b>1-Wire:</b> '+(d.ds18b20_ok?'<span class=badge-ok>DS18B20 \u2713</span>':'<span class=badge-ng>DS18B20 \u2717</span>')+
       ' | <b>UART:</b> '+(d.sen0575_ok?'<span class=badge-ok>SEN0575 \u2713</span>':'<span class=badge-ng>SEN0575 \u2717</span>');
     var rt='';
-    var ccm=d.ccm_map||[];
+    var rch=d.relay_ch||[];
     for(var i=0;i<8;i++){
       var s=(d.relay_state>>(i))&1;
-      var m=ccm[i]||{};
-      var tname=m.type||'(unmapped)';
-      rt+='<tr><td>'+(i+1)+'</td><td>'+tname+' <span class=ccm>R'+
-        (m.room||'-')+'/Rg'+(m.region||'-')+'/O'+(m.order||'-')+'</span></td>'+
-        '<td>'+(m.room||'-')+'</td>'+
+      var m=rch[i]||{};
+      var diInfo=m.di_link>=0?(' <span style="color:#29b6f6;font-size:0.85em">DI'+(m.di_link+1)+(m.di_invert?'(inv)':'')+'</span>'):'';
+      rt+='<tr><td>'+(i+1)+'</td><td>CH'+(i+1)+diInfo+'</td>'+
         '<td class="'+(s?'on':'off')+'">'+(s?'\u2713 '+T.on:'\u2717 '+T.off)+'</td>'+
         '<td><button class=bon onclick="relay('+(i+1)+',1)">ON</button> '+
         '<button class=bof onclick="relay('+(i+1)+',0)">OFF</button></td></tr>';
@@ -70,19 +68,6 @@ function load(){
     if(d.sensor&&d.sensor.co2!==undefined)sv+='<b>CO2:</b> '+d.sensor.co2+'ppm <b>SCD41:</b> '+d.sensor.scd41_temp.toFixed(1)+'C '+d.sensor.scd41_hum.toFixed(1)+'% ';
     if(d.sensor&&d.sensor.temp===null&&d.sensor.hum===null&&d.sensor.ds18b20_temp===null&&d.sensor.solar_wm2===null&&d.sensor.co2===undefined)sv+='<span class=off>No sensors</span>';
     document.getElementById('sens').innerHTML=sv;
-    var cs=d.ccm_solar;
-    if(cs&&cs.wm2!==undefined){
-      var age=cs.age_sec;
-      var cv='<h3>CCM InRadiation</h3>';
-      if(age<0||age>60){
-        cv+='<span class=off>No data'+(age>0?' ('+age+'s ago)':'')+'</span>';
-      }else{
-        cv+='<b>'+cs.wm2.toFixed(1)+' W/m&sup2;</b>';
-        cv+=' | <span class=ccm>Room'+cs.room+'/Rg'+cs.region+'/O'+cs.order+'</span>';
-        cv+=' | '+age+'s ago';
-      }
-      document.getElementById('ccm_solar').innerHTML=cv;
-    }
     var gh=d.greenhouse||[];
     var anyGh=false;
     for(var i=0;i<gh.length;i++){if(gh[i].enabled)anyGh=true;}
@@ -140,28 +125,26 @@ load();setInterval(load,5000);
 )DASH_JS";
 
 void sendDashboard(WiFiClient& client) {
-  sendCommonHead(client, L("CCM Relay Node", "CCMリレーノード"));
+  sendCommonHead(client, L("MQTT Relay Node", "MQTTリレーノード"));
   client.println("<style>"
     ".bon{background:#43a047;color:#fff;border:none;padding:8px 16px;border-radius:3px;cursor:pointer}"
     ".bof{background:#e53935;color:#fff;border:none;padding:8px 16px;border-radius:3px;cursor:pointer}"
-    ".ccm{color:#ffa726;font-size:0.85em}"
     "</style></head><body>");
-  client.printf("<h2>%s</h2>\n", L("CCM Relay Node (UECS)", "CCMリレーノード (UECS)"));
+  client.printf("<h2>%s</h2>\n", L("MQTT Relay Node", "MQTTリレーノード"));
   printNavLinks(client);
   client.printf("<div class=sec id=sys>%s</div>\n", L("Loading...","読み込み中..."));
   client.printf("<div class=sec id=net>%s</div>\n", L("Loading...","読み込み中..."));
   client.printf("<div class=sec id=devstat>%s</div>\n", L("Loading...","読み込み中..."));
   client.println("<div class=sec>");
-  client.printf("<h3>%s</h3>\n", L("Relay / CCM Mapping", "リレー/CCM割当"));
-  client.printf("<table><tr><th>CH</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr>\n",
-    L("CCM Type","CCMタイプ"), L("Room","部屋"), L("State","状態"), L("Control","制御"));
+  client.printf("<h3>%s</h3>\n", L("Relay / DI Link", "リレー/DI連動"));
+  client.printf("<table><tr><th>CH</th><th>%s</th><th>%s</th><th>%s</th></tr>\n",
+    L("Channel","チャンネル"), L("State","状態"), L("Control","制御"));
   client.println("<tbody id=rtbl></tbody></table></div>");
   client.println("<div class=sec>");
   client.printf("<h3>%s</h3>\n", L("Digital Input", "デジタル入力"));
   client.printf("<table><tr><th>CH</th><th>%s</th></tr>\n", L("State","状態"));
   client.println("<tbody id=dtbl></tbody></table></div>");
   client.println("<div class=sec id=sens></div>");
-  client.println("<div class=sec id=ccm_solar></div>");
   client.println("<div class=sec id=gh></div>");
   client.println("<div class=sec id=irri></div>");
   client.println("<div class=sec id=prot></div>");

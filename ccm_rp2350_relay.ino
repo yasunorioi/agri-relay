@@ -1,6 +1,6 @@
-// ccm_rp2350_relay.ino - Waveshare 8ch Relay + DI Node (RP2350B) — UECS-CCM版
+// ccm_rp2350_relay.ino - Waveshare 8ch Relay + DI Node (RP2350B) — MQTT版
 // Board: RP2350-ETH-8DI-8RO / RP2350-POE-ETH-8DI-8RO
-// Protocol: UECS-CCM (UDP multicast 224.0.0.1:16520)
+// Protocol: MQTT over TCP (PubSubClient)
 // Relay: GPIO17-24 直接制御
 // DI:    GPIO9-16, フォトカプラ絶縁, アクティブLOW, 割り込み検知
 // RTC:   PCF85063 (I2C1: SDA=GPIO6, SCL=GPIO7) — GPIO6/7 is I2C1 on RP2350B pinmux
@@ -9,8 +9,7 @@
 //
 // Libraries: arduino-pico 4.5.2+, ArduinoJson 7.x, NTPClient 3.2.1,
 //            W5500lwIP (arduino-pico内蔵), SensirionI2cSht4x (optional),
-//            LEAmDNS (arduino-pico内蔵)
-// Note: PubSubClient 不要 (CCM = UDP multicast)
+//            LEAmDNS (arduino-pico内蔵), PubSubClient 2.8
 
 #include <SPI.h>
 #include <W5500lwIP.h>
@@ -19,6 +18,7 @@
 #include <Wire.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <PubSubClient.h>
 #include <SensirionI2cSht4x.h>
 #include <SensirionI2cScd4x.h>
 #include <LEAmDNS.h>
@@ -31,14 +31,8 @@
 #include "sensor_registry.h"
 
 // ========== Firmware Version ==========
-const char* FW_VERSION = "1.0.0";
-const char* FW_NAME    = "ccm_rp2350_relay";
-
-// ========== UECS-CCM Protocol ==========
-const IPAddress CCM_MULTICAST(224, 0, 0, 1);
-const int       CCM_PORT       = 16520;
-const char*     UECS_VERSION   = "1.00-E10";
-const int       CCM_SEND_INTERVAL = 10;  // seconds
+const char* FW_VERSION = "2.0.0";
+const char* FW_NAME    = "mqtt_rp2350_relay";
 
 // ========== Default Configuration ==========
 const char* DEFAULT_NODE_NAME     = "UECS-Pi Relay";
@@ -88,29 +82,24 @@ const int RELAY_PINS[8] = {17, 18, 19, 20, 21, 22, 23, 24};
 // ========== DI GPIO Pins (GPIO9-16, アクティブLOW) ==========
 const int DI_PINS[8] = {9, 10, 11, 12, 13, 14, 15, 16};
 
-// ========== CCM Channel Mapping ==========
-// 各リレーchに対するCCM属性 (WebUIから設定)
-struct CcmMapping {
-  char     ccmType[32];   // CcmInfoName: "Irri", "VenFan", etc. 空=未割当
-  int      room;
-  int      region;
-  int      order;
-  int      priority;
-  char     suffix[8];     // ".cMC", ".mC", ".MC" — default ".cMC"
-  int      watchdog_sec;  // 無通信タイマー秒 (0=無効, >0: 最終CCM受信からN秒でOFF)
-  int      di_link;      // DI連動 (-1=なし, 0-7=DI番号, ON→リレーON)
-  bool     di_invert;    // DI反転 (true: DI ON→リレーOFF, フロートスイッチ等)
+// ========== Relay Channel Config (per-ch DI link + MQTT duration) ==========
+struct RelayChCfg {
+  int  watchdog_sec;  // MQTT受信後N秒でauto-OFF (0=無効)
+  int  di_link;       // DI連動 (-1=なし, 0-7=DI番号)
+  bool di_invert;     // DI反転 (true: DI ON→リレーOFF)
 };
+RelayChCfg relayCh[8];
 
-// ArSprout標準のアクチュエータタイプ
-const char* CCM_ACTUATOR_TYPES[] = {
-  "", "Irri", "VenFan", "CirHoriFan", "AirHeatBurn", "AirHeatHP",
-  "CO2Burn", "VenRfWin", "VenSdWin", "ThCrtn", "LsCrtn",
-  "AirCoolHP", "AirHumFog", "Relay"
+// ========== MQTT Config ==========
+struct MqttConfig {
+  bool enabled;
+  char broker[64];
+  int  port;
+  char house_id[16];
+  char client_id[32];
+  int  publish_interval;
 };
-const int CCM_ACTUATOR_TYPES_COUNT = sizeof(CCM_ACTUATOR_TYPES) / sizeof(CCM_ACTUATOR_TYPES[0]);
-
-CcmMapping ccmMap[8];
+MqttConfig mqttCfg;
 
 // ========== Greenhouse Local Control ==========
 // 温度ベース比例制御。CCM受信優先 → 途絶時ローカルフォールバック
@@ -289,9 +278,6 @@ struct ApertureRuntime {
 ApertureConfig  aptCtrl[APT_SLOTS];
 ApertureRuntime aptRun[APT_SLOTS];
 
-// CCM InRadiation受信キャッシュ
-struct CcmSolarInfo { float wm2; int room; int region; int order; unsigned long last_rx; };
-CcmSolarInfo ccmSolar = {NAN, 0, 0, 0, 0};
 int g_language = 0;  // 0=EN, 1=JP
 
 // ========== Timing ==========
@@ -312,7 +298,7 @@ enum RelayOwner : uint8_t {
   OWN_DEW      = 2,  // 結露防止
   OWN_RATE     = 3,  // 急昇温ガード
   OWN_CO2      = 4,  // CO2ガード
-  OWN_CCM      = 5,  // CCM受信
+  OWN_MQTT     = 5,  // MQTT受信
   OWN_MANUAL   = 6,  // WebUI手動 / DI連動
   OWN_APT      = 7,  // 開度（側窓）制御
   OWN_COUNT    = 8
@@ -323,7 +309,6 @@ uint8_t relayInterested[8] = {0};  // ビットマスク: bit N = OWN_xxx がこ
 // ========== Global State ==========
 uint8_t      relayState          = 0x00;
 unsigned long relayDurationEnd[8] = {0};
-unsigned long lastCcmRx[8]       = {0};  // 最終CCM受信時刻 (millis)
 
 bool diState[8]     = {false};
 bool diPrevState[8] = {false};
@@ -365,8 +350,14 @@ unsigned long last_status = 0;  // [STATUS] 30秒タイマー
 // GPIO33-36 are SPI0 pins on RP2350B (not SPI1)
 Wiznet5500lwIP* ethPtr = nullptr;
 #define eth (*ethPtr)
-WiFiUDP        ccmUDP;      // CCM multicast send/receive
 WiFiUDP        ntpUDP;
+WiFiClient     ethClient;
+PubSubClient   mqttClient(ethClient);
+unsigned long  lastMqttPublish     = 0;
+unsigned long  lastMqttReconnect   = 0;
+unsigned long  mqttDurationEnd[8]  = {0};  // MQTT duration_secタイマー
+bool           mqttOnline          = false;
+float          g_mqtt_solar_wm2    = NAN;  // MQTT受信の日射フォールバック
 NTPClient      timeClient(ntpUDP, "pool.ntp.org", 0);
 SensirionI2cSht4x sht4x;
 SensirionI2cScd4x scd4x;
@@ -399,8 +390,16 @@ uint16_t sen0575_workTimeMins = 0;
 // ========== Function Declarations ==========
 void loadConfig();
 void saveLangToConfig();
-void loadCcmMapping();
-void saveCcmMapping();
+void loadRelayChConfig();
+void saveRelayChConfig();
+void loadMqttConfig();
+void saveMqttConfig();
+void initMqtt();
+void mqttReconnect();
+void mqttPublishAll();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void sendMqttConfigPage(WiFiClient& client);
+void handleMqttConfigPost(WiFiClient& client, const String& body);
 void initEthernet();
 void setRelay(uint8_t ch, bool on);
 void claimRelay(uint8_t ch, RelayOwner owner);
@@ -420,10 +419,8 @@ void sendDashboard(WiFiClient& client);
 void sendAPIState(WiFiClient& client);
 void sendAPIConfig(WiFiClient& client);
 void sendConfigPage(WiFiClient& client);
-void sendCcmConfigPage(WiFiClient& client);
 void handleRelayPost(WiFiClient& client, int ch, const String& body);
 void handleConfigPost(WiFiClient& client, const String& body);
-void handleCcmConfigPost(WiFiClient& client, const String& body);
 void sendOTAPage(WiFiClient& client);
 void handleOTAUpload(WiFiClient& client, int contentLength);
 void initRS485();
@@ -431,8 +428,6 @@ void pollDrainSensor();
 uint16_t modbusCalcCRC(const uint8_t* data, size_t len);
 bool modbusReadInput(uint8_t addr, uint16_t reg, uint16_t count,
                      uint16_t* out1, uint16_t* out2);
-void ccmSendStates();
-void ccmReceive();
 void loadGreenhouseConfig();
 void saveGreenhouseConfig();
 void greenhouseControl(unsigned long now);
@@ -559,10 +554,10 @@ void setRelay(uint8_t ch, bool on) {
   Serial.printf("Relay CH%d %s  (state=0x%02X)\n", ch, on ? "ON" : "OFF", relayState);
 }
 
-// 暖房chか判定 (AirHeatBurn / AirHeatHP)
+// 暖房chか判定 (MQTT版: AND合成廃止、全チャンネルOR合成)
 bool isHeaterCh(uint8_t idx) {
-  return (strcmp(ccmMap[idx].ccmType, "AirHeatBurn") == 0 ||
-          strcmp(ccmMap[idx].ccmType, "AirHeatHP") == 0);
+  (void)idx;
+  return false;
 }
 
 // 制御者がリレーをON要求
@@ -859,332 +854,298 @@ void pollDrainSensor() {
 }
 
 // ============================================================
-// UECS-CCM: Send relay/DI/sensor states as CCM XML
-// UDP multicast 224.0.0.1:16520
+// Relay Channel Config (DI link + MQTT watchdog)
 // ============================================================
-void ccmSendStates() {
-  // Build XML packet with all mapped channels
-  String xml = "<UECS ver=\"";
-  xml += UECS_VERSION;
-  xml += "\">";
-
-  // Relay states (mapped channels only)
+void loadRelayChConfig() {
   for (int i = 0; i < 8; i++) {
-    if (ccmMap[i].ccmType[0] == '\0') continue;  // unmapped
-    int val = (relayState >> i) & 1;
-    xml += "<DATA type=\"";
-    xml += ccmMap[i].ccmType;
-    xml += ccmMap[i].suffix;
-    xml += "\" room=\"";
-    xml += ccmMap[i].room;
-    xml += "\" region=\"";
-    xml += ccmMap[i].region;
-    xml += "\" order=\"";
-    xml += ccmMap[i].order;
-    xml += "\" priority=\"";
-    xml += ccmMap[i].priority;
-    xml += "\" lv=\"S\" cast=\"uni\">";
-    xml += val;
-    xml += "</DATA>";
+    relayCh[i].watchdog_sec = 0;
+    relayCh[i].di_link      = -1;
+    relayCh[i].di_invert    = false;
   }
-
-  // I2C sensor: InAirTemp, InAirHumid (room=1, region=11 = internal sensor)
-  if (sht40_detected && !isnan(g_sht40_temp)) {
-    int room = (ccmMap[0].ccmType[0] != '\0') ? ccmMap[0].room : 1;
-    int region = 11;  // UECS internal sensor region
-
-    xml += "<DATA type=\"InAirTemp.cMC\" room=\"";
-    xml += room;
-    xml += "\" region=\"";
-    xml += region;
-    xml += "\" order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-    char tempBuf[8];
-    dtostrf(g_sht40_temp, 1, 1, tempBuf);
-    xml += tempBuf;
-    xml += "</DATA>";
-
-    if (!isnan(g_sht40_hum)) {
-      xml += "<DATA type=\"InAirHumid.cMC\" room=\"";
-      xml += room;
-      xml += "\" region=\"";
-      xml += region;
-      xml += "\" order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-      char humBuf[8];
-      dtostrf(g_sht40_hum, 1, 1, humBuf);
-      xml += humBuf;
-      xml += "</DATA>";
-    }
-  }
-
-  // DS18B20 (OneWire) — 外部温度としてCCM送信
-  if (ds18b20_detected && !isnan(g_ds18b20_temp)) {
-    int room = (ccmMap[0].ccmType[0] != '\0') ? ccmMap[0].room : 2;
-    xml += "<DATA type=\"InAirTemp.cMC\" room=\"";
-    xml += room;
-    xml += "\" region=\"12\" order=\"2\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-    char dsBuf[8];
-    dtostrf(g_ds18b20_temp, 1, 1, dsBuf);
-    xml += dsBuf;
-    xml += "</DATA>";
-  }
-
-  // Solar radiation as InRadiation (ADS1110 + PVSS-03)
-  if (ads1110_detected && !isnan(g_solar_wm2)) {
-    int room = (ccmMap[0].ccmType[0] != '\0') ? ccmMap[0].room : 2;
-    xml += "<DATA type=\"InRadiation.cMC\" room=\"";
-    xml += room;
-    xml += "\" region=\"11\" order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-    char solBuf[8];
-    dtostrf(g_solar_wm2, 1, 1, solBuf);
-    xml += solBuf;
-    xml += "</DATA>";
-  }
-
-  // SEN0575 rainfall as WRainfallAmt (weather rainfall amount)
-  if (sen0575_detected) {
-    float rainfall_mm = sen0575_cumRainRaw / 10000.0;
-    xml += "<DATA type=\"WRainfallAmt.cMC\" room=\"1\" region=\"41\" ";
-    xml += "order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-    char rainBuf[12];
-    dtostrf(rainfall_mm, 1, 2, rainBuf);
-    xml += rainBuf;
-    xml += "</DATA>";
-  }
-
-  // SCD41 CO2
-  if (scd41_detected && g_scd41_co2 > 0) {
-    int room = (ccmMap[0].ccmType[0] != '\0') ? ccmMap[0].room : 2;
-    xml += "<DATA type=\"InAirCO2.cMC\" room=\"";
-    xml += room;
-    xml += "\" region=\"11\" order=\"1\" priority=\"29\" lv=\"S\" cast=\"uni\">";
-    xml += g_scd41_co2;
-    xml += "</DATA>";
-  }
-
-  xml += "</UECS>";
-
-  // Send via UDP multicast
-  if (ccmUDP.beginPacketMulticast(CCM_MULTICAST, CCM_PORT, eth.localIP())) {
-    ccmUDP.write((const uint8_t*)xml.c_str(), xml.length());
-    ccmUDP.endPacket();
-    Serial.printf("CCM TX: %d bytes\n", xml.length());
-  }
-}
-
-// ============================================================
-// UECS-CCM: Receive and process incoming CCM packets
-// Match type+room+region+order to relay channels
-// ============================================================
-void ccmReceive() {
-  int packetSize = ccmUDP.parsePacket();
-  if (packetSize <= 0) return;
-
-  // Read packet (max 2048 bytes)
-  char buf[2048];
-  int len = ccmUDP.read(buf, sizeof(buf) - 1);
-  if (len <= 0) return;
-  buf[len] = '\0';
-
-  // Skip packets from ourselves
-  IPAddress remote = ccmUDP.remoteIP();
-  if (remote == eth.localIP()) return;
-
-  // Simple XML parsing: find each <DATA ...>value</DATA>
-  char* pos = buf;
-  while ((pos = strstr(pos, "<DATA ")) != nullptr) {
-    char* tagEnd = strchr(pos, '>');
-    if (!tagEnd) break;
-
-    // Extract attributes
-    char type[48] = "";
-    int  room = -1, region = -1, order = -1, priority = -1;
-
-    // type="..."
-    char* tAttr = strstr(pos, "type=\"");
-    if (tAttr && tAttr < tagEnd) {
-      tAttr += 6;
-      char* tEnd = strchr(tAttr, '"');
-      if (tEnd && tEnd < tagEnd) {
-        int tLen = tEnd - tAttr;
-        if (tLen < (int)sizeof(type)) {
-          memcpy(type, tAttr, tLen);
-          type[tLen] = '\0';
-        }
-      }
-    }
-
-    // room="..."
-    char* rAttr = strstr(pos, "room=\"");
-    if (rAttr && rAttr < tagEnd) room = atoi(rAttr + 6);
-
-    // region="..."
-    char* rgAttr = strstr(pos, "region=\"");
-    if (rgAttr && rgAttr < tagEnd) region = atoi(rgAttr + 8);
-
-    // order="..."
-    char* oAttr = strstr(pos, "order=\"");
-    if (oAttr && oAttr < tagEnd) order = atoi(oAttr + 7);
-
-    // priority="..."
-    char* pAttr = strstr(pos, "priority=\"");
-    if (pAttr && pAttr < tagEnd) priority = atoi(pAttr + 10);
-
-    // Value (between > and </DATA>)
-    char* valStart = tagEnd + 1;
-    char* valEnd   = strstr(valStart, "</DATA>");
-    if (!valEnd) break;
-
-    char valBuf[32] = "";
-    int valLen = valEnd - valStart;
-    if (valLen > 0 && valLen < (int)sizeof(valBuf)) {
-      memcpy(valBuf, valStart, valLen);
-      valBuf[valLen] = '\0';
-    }
-
-    // Strip CCM suffix from type for matching (.cMC, .mC, .MC)
-    char baseType[48];
-    strncpy(baseType, type, sizeof(baseType));
-    baseType[sizeof(baseType) - 1] = '\0';
-    char* dot = strrchr(baseType, '.');
-    if (dot) {
-      // Check if suffix is a known CCM suffix
-      if (strcmp(dot, ".cMC") == 0 || strcmp(dot, ".mC") == 0 || strcmp(dot, ".MC") == 0) {
-        *dot = '\0';
-      }
-    }
-
-    // Match against our channel mapping
-    for (int ch = 0; ch < 8; ch++) {
-      if (ccmMap[ch].ccmType[0] == '\0') continue;
-      if (strcmp(ccmMap[ch].ccmType, baseType) != 0) continue;
-      if (ccmMap[ch].room   != room)   continue;
-      if (ccmMap[ch].region != region) continue;
-      if (ccmMap[ch].order  != order)  continue;
-
-      // Priority check: only accept higher priority (lower number)
-      if (priority >= 0 && ccmMap[ch].priority > 0 && priority > ccmMap[ch].priority) {
-        continue;  // lower priority, ignore
-      }
-
-      float fval = atof(valBuf);
-      int ival = (int)(fval + 0.5);
-
-      lastCcmRx[ch] = millis();
-      if (ival > 0) {
-        claimRelay(ch + 1, OWN_CCM);
-      } else {
-        releaseRelay(ch + 1, OWN_CCM);
-      }
-      Serial.printf("CCM RX: %s room=%d → CH%d = %d\n", type, room, ch + 1, ival);
-      break;
-    }
-
-    // CCM sensor reception: InRadiation → use as solar input for irrigation
-    if (strcmp(baseType, "InRadiation") == 0) {
-      float wm2 = atof(valBuf);
-      if (wm2 >= 0.0 && wm2 <= 2000.0) {
-        if (!ads1110_detected) g_solar_wm2 = wm2;
-        ccmSolar.wm2     = wm2;
-        ccmSolar.room    = room;
-        ccmSolar.region  = region;
-        ccmSolar.order   = order;
-        ccmSolar.last_rx = millis();
-        Serial.printf("CCM RX: InRadiation=%.1f W/m2 (room=%d)\n", wm2, room);
-      }
-    }
-
-    pos = valEnd + 7;  // skip past </DATA>
-  }
-}
-
-// ============================================================
-// CCM Mapping Config (LittleFS /ccm_map.json)
-// ============================================================
-void loadCcmMapping() {
-  // Initialize defaults
-  for (int i = 0; i < 8; i++) {
-    strncpy(ccmMap[i].ccmType, "Relay", sizeof(ccmMap[i].ccmType) - 1);
-    ccmMap[i].room     = 2;
-    ccmMap[i].region   = 61;
-    ccmMap[i].order    = i + 1;  // CH1=1, CH2=2, ..., CH8=8
-    ccmMap[i].priority = 1;
-    ccmMap[i].watchdog_sec = 60;
-    ccmMap[i].di_link      = -1;
-    ccmMap[i].di_invert    = false;
-    strncpy(ccmMap[i].suffix, ".cMC", sizeof(ccmMap[i].suffix));
-  }
-
-  if (!LittleFS.exists("/ccm_map.json")) {
-    Serial.println("CCM map: no config, using defaults (all Relay, room=2)");
-    return;
-  }
-
-  File f = LittleFS.open("/ccm_map.json", "r");
+  if (!LittleFS.exists("/relay_ch.json")) return;
+  File f = LittleFS.open("/relay_ch.json", "r");
   if (!f) return;
-
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, f);
+  if (deserializeJson(doc, f) != DeserializationError::Ok) { f.close(); return; }
   f.close();
-  if (err) {
-    Serial.printf("CCM map parse error: %s\n", err.c_str());
-    return;
-  }
-
   JsonArray arr = doc["channels"].as<JsonArray>();
+  if (!arr) return;
   int idx = 0;
   for (JsonObject ch : arr) {
     if (idx >= 8) break;
-    const char* t = ch["type"] | "";
-    strncpy(ccmMap[idx].ccmType, t, sizeof(ccmMap[idx].ccmType) - 1);
-    ccmMap[idx].ccmType[sizeof(ccmMap[idx].ccmType) - 1] = '\0';
-    ccmMap[idx].room     = ch["room"]     | 1;
-    ccmMap[idx].region   = ch["region"]   | 61;
-    ccmMap[idx].order    = ch["order"]    | 1;
-    ccmMap[idx].priority     = ch["priority"]     | 1;
-    ccmMap[idx].watchdog_sec = ch["watchdog_sec"] | 60;
-    ccmMap[idx].di_link      = ch["di_link"]      | -1;
-    ccmMap[idx].di_invert    = ch["di_invert"]    | false;
-    const char* sfx = ch["suffix"] | ".cMC";
-    strncpy(ccmMap[idx].suffix, sfx, sizeof(ccmMap[idx].suffix) - 1);
-    ccmMap[idx].suffix[sizeof(ccmMap[idx].suffix) - 1] = '\0';
+    relayCh[idx].watchdog_sec = ch["watchdog_sec"] | 0;
+    relayCh[idx].di_link      = ch["di_link"]      | -1;
+    relayCh[idx].di_invert    = ch["di_invert"]    | false;
     idx++;
-  }
-
-  Serial.println("CCM map loaded:");
-  for (int i = 0; i < 8; i++) {
-    if (ccmMap[i].ccmType[0] != '\0') {
-      Serial.printf("  CH%d: %s%s room=%d region=%d order=%d pri=%d\n",
-                    i + 1, ccmMap[i].ccmType, ccmMap[i].suffix,
-                    ccmMap[i].room, ccmMap[i].region,
-                    ccmMap[i].order, ccmMap[i].priority);
-    }
   }
 }
 
-void saveCcmMapping() {
+void saveRelayChConfig() {
   JsonDocument doc;
   JsonArray arr = doc["channels"].to<JsonArray>();
   for (int i = 0; i < 8; i++) {
     JsonObject ch = arr.add<JsonObject>();
-    ch["type"]     = ccmMap[i].ccmType;
-    ch["room"]     = ccmMap[i].room;
-    ch["region"]   = ccmMap[i].region;
-    ch["order"]    = ccmMap[i].order;
-    ch["priority"]     = ccmMap[i].priority;
-    ch["watchdog_sec"] = ccmMap[i].watchdog_sec;
-    ch["di_link"]      = ccmMap[i].di_link;
-    ch["di_invert"]    = ccmMap[i].di_invert;
-    ch["suffix"]       = ccmMap[i].suffix;
+    ch["watchdog_sec"] = relayCh[i].watchdog_sec;
+    ch["di_link"]      = relayCh[i].di_link;
+    ch["di_invert"]    = relayCh[i].di_invert;
   }
-
-  File f = LittleFS.open("/ccm_map.json", "w");
-  if (!f) {
-    Serial.println("CCM map: save failed");
-    return;
-  }
+  File f = LittleFS.open("/relay_ch.json", "w");
+  if (!f) return;
   serializeJson(doc, f);
   f.close();
-  Serial.println("CCM map saved");
+}
+
+// ============================================================
+// MQTT Config (LittleFS /mqtt_config.json)
+// ============================================================
+void loadMqttConfig() {
+  mqttCfg.enabled          = true;
+  strncpy(mqttCfg.broker,       "192.168.100.1", sizeof(mqttCfg.broker));
+  mqttCfg.port             = 1883;
+  strncpy(mqttCfg.house_id,     "h01", sizeof(mqttCfg.house_id));
+  mqttCfg.client_id[0]     = '\0';
+  mqttCfg.publish_interval = 10;
+
+  if (!LittleFS.exists("/mqtt_config.json")) return;
+  File f = LittleFS.open("/mqtt_config.json", "r");
+  if (!f) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, f) != DeserializationError::Ok) { f.close(); return; }
+  f.close();
+  mqttCfg.enabled          = doc["enabled"]          | true;
+  const char* br = doc["broker"] | "192.168.100.1";
+  strncpy(mqttCfg.broker, br, sizeof(mqttCfg.broker) - 1);
+  mqttCfg.port             = doc["port"]             | 1883;
+  const char* hi = doc["house_id"] | "h01";
+  strncpy(mqttCfg.house_id, hi, sizeof(mqttCfg.house_id) - 1);
+  const char* ci = doc["client_id"] | "";
+  strncpy(mqttCfg.client_id, ci, sizeof(mqttCfg.client_id) - 1);
+  mqttCfg.publish_interval = doc["publish_interval"] | 10;
+}
+
+void saveMqttConfig() {
+  JsonDocument doc;
+  doc["enabled"]          = mqttCfg.enabled;
+  doc["broker"]           = mqttCfg.broker;
+  doc["port"]             = mqttCfg.port;
+  doc["house_id"]         = mqttCfg.house_id;
+  doc["client_id"]        = mqttCfg.client_id;
+  doc["publish_interval"] = mqttCfg.publish_interval;
+  File f = LittleFS.open("/mqtt_config.json", "w");
+  if (!f) return;
+  serializeJson(doc, f);
+  f.close();
+}
+
+// ============================================================
+// MQTT callback — relay/{ch}/set, farm/weather/#
+// ============================================================
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  char buf[256];
+  if (length >= sizeof(buf)) length = sizeof(buf) - 1;
+  memcpy(buf, payload, length);
+  buf[length] = '\0';
+
+  String topicStr(topic);
+  String base = String("agriha/") + mqttCfg.house_id + "/relay/";
+
+  // relay/{ch}/set
+  for (int ch = 1; ch <= 8; ch++) {
+    String expected = base + String(ch) + "/set";
+    if (topicStr == expected) {
+      JsonDocument doc;
+      if (deserializeJson(doc, buf) != DeserializationError::Ok) return;
+      int value = doc["value"] | -1;
+      int dur   = doc["duration_sec"] | 0;
+      if (value < 0) return;
+      if (value > 0) {
+        claimRelay(ch, OWN_MQTT);
+        if (dur > 0) {
+          mqttDurationEnd[ch - 1] = millis() + (unsigned long)dur * 1000UL;
+        } else {
+          mqttDurationEnd[ch - 1] = 0;
+        }
+      } else {
+        releaseRelay(ch, OWN_MQTT);
+        mqttDurationEnd[ch - 1] = 0;
+      }
+      Serial.printf("MQTT RX relay/%d/set value=%d dur=%d\n", ch, value, dur);
+      return;
+    }
+  }
+
+  // agriha/farm/weather/solar → g_mqtt_solar_wm2
+  String weatherBase = "agriha/farm/weather/";
+  if (topicStr.startsWith(weatherBase)) {
+    String sub = topicStr.substring(weatherBase.length());
+    if (sub == "solar") {
+      JsonDocument doc;
+      if (deserializeJson(doc, buf) == DeserializationError::Ok) {
+        float wm2 = doc["solar_wm2"] | doc["value"] | (float)NAN;
+        if (!isnan(wm2) && wm2 >= 0.0 && wm2 <= 2000.0) {
+          g_mqtt_solar_wm2 = wm2;
+          Serial.printf("MQTT RX farm/weather/solar=%.1f W/m2\n", wm2);
+        }
+      }
+    }
+  }
+}
+
+// ============================================================
+// MQTT init & reconnect
+// ============================================================
+void initMqtt() {
+  if (!mqttCfg.enabled) return;
+
+  // Auto-generate client_id from MAC if not set
+  if (mqttCfg.client_id[0] == '\0') {
+    uint8_t mac[6];
+    eth.macAddress(mac);
+    snprintf(mqttCfg.client_id, sizeof(mqttCfg.client_id),
+             "agri-relay-%02X%02X", mac[4], mac[5]);
+  }
+
+  mqttClient.setServer(mqttCfg.broker, mqttCfg.port);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(512);
+}
+
+void mqttReconnect() {
+  if (!mqttCfg.enabled) return;
+  if (mqttClient.connected()) return;
+
+  unsigned long now = millis();
+  if (now - lastMqttReconnect < 5000UL) return;
+  lastMqttReconnect = now;
+
+  char willTopic[64];
+  snprintf(willTopic, sizeof(willTopic), "agriha/%s/status", mqttCfg.house_id);
+
+  char willPayload[] = "{\"online\":false}";
+
+  Serial.printf("MQTT: connecting to %s:%d as %s ...\n",
+                mqttCfg.broker, mqttCfg.port, mqttCfg.client_id);
+
+  bool ok = mqttClient.connect(mqttCfg.client_id,
+                               nullptr, nullptr,
+                               willTopic, 1, true, willPayload);
+  if (!ok) {
+    Serial.printf("MQTT: connect failed, rc=%d\n", mqttClient.state());
+    return;
+  }
+
+  Serial.println("MQTT: connected");
+  mqttOnline = true;
+
+  // Publish online status
+  char onlinePayload[64];
+  unsigned long ep = getCurrentEpoch();
+  if (ep > 0) {
+    snprintf(onlinePayload, sizeof(onlinePayload), "{\"online\":true,\"ts\":%lu}", ep);
+  } else {
+    strncpy(onlinePayload, "{\"online\":true}", sizeof(onlinePayload));
+  }
+  mqttClient.publish(willTopic, onlinePayload, true);
+
+  // Subscribe: relay/{ch}/set
+  char subTopic[64];
+  snprintf(subTopic, sizeof(subTopic), "agriha/%s/relay/+/set", mqttCfg.house_id);
+  mqttClient.subscribe(subTopic, 1);
+  Serial.printf("MQTT: subscribed %s\n", subTopic);
+
+  // Subscribe: farm/weather/#
+  mqttClient.subscribe("agriha/farm/weather/#", 1);
+  Serial.println("MQTT: subscribed agriha/farm/weather/#");
+}
+
+// ============================================================
+// MQTT publish all sensors + relay state
+// ============================================================
+void mqttPublishAll() {
+  if (!mqttClient.connected()) return;
+
+  unsigned long ep = getCurrentEpoch();
+  char topic[80];
+  char payload[200];
+
+  // SHT40
+  if (sht40_detected && !isnan(g_sht40_temp)) {
+    snprintf(topic, sizeof(topic), "agriha/%s/sensor/SHT40", mqttCfg.house_id);
+    if (ep > 0)
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"humidity_pct\":%.1f,\"timestamp\":%lu}",
+               g_sht40_temp, g_sht40_hum, ep);
+    else
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"humidity_pct\":%.1f,\"timestamp\":0}",
+               g_sht40_temp, g_sht40_hum);
+    mqttClient.publish(topic, payload, true);
+  }
+
+  // SCD41
+  if (scd41_detected && g_scd41_co2 > 0) {
+    snprintf(topic, sizeof(topic), "agriha/%s/sensor/SCD41", mqttCfg.house_id);
+    if (ep > 0)
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"humidity_pct\":%.1f,\"co2_ppm\":%u,\"timestamp\":%lu}",
+               g_scd41_temp, g_scd41_hum, g_scd41_co2, ep);
+    else
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"humidity_pct\":%.1f,\"co2_ppm\":%u,\"timestamp\":0}",
+               g_scd41_temp, g_scd41_hum, g_scd41_co2);
+    mqttClient.publish(topic, payload, true);
+  }
+
+  // DS18B20
+  if (ds18b20_detected && !isnan(g_ds18b20_temp)) {
+    snprintf(topic, sizeof(topic), "agriha/%s/sensor/DS18B20", mqttCfg.house_id);
+    if (ep > 0)
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"timestamp\":%lu}", g_ds18b20_temp, ep);
+    else
+      snprintf(payload, sizeof(payload),
+               "{\"temperature_c\":%.2f,\"timestamp\":0}", g_ds18b20_temp);
+    mqttClient.publish(topic, payload, true);
+  }
+
+  // ADS1110 (solar)
+  if (ads1110_detected && !isnan(g_solar_wm2)) {
+    snprintf(topic, sizeof(topic), "agriha/%s/sensor/ADS1110", mqttCfg.house_id);
+    if (ep > 0)
+      snprintf(payload, sizeof(payload),
+               "{\"solar_wm2\":%.1f,\"timestamp\":%lu}", g_solar_wm2, ep);
+    else
+      snprintf(payload, sizeof(payload),
+               "{\"solar_wm2\":%.1f,\"timestamp\":0}", g_solar_wm2);
+    mqttClient.publish(topic, payload, true);
+  }
+
+  // SEN0575 (rain/drain)
+  if (sen0575_detected) {
+    snprintf(topic, sizeof(topic), "agriha/%s/sensor/SEN0575", mqttCfg.house_id);
+    float drain_mm = (float)sen0575_cumRainRaw * 0.2f;
+    if (ep > 0)
+      snprintf(payload, sizeof(payload),
+               "{\"drain_mm\":%.1f,\"timestamp\":%lu}", drain_mm, ep);
+    else
+      snprintf(payload, sizeof(payload),
+               "{\"drain_mm\":%.1f,\"timestamp\":0}", drain_mm);
+    mqttClient.publish(topic, payload, true);
+  }
+
+  // relay/state
+  {
+    snprintf(topic, sizeof(topic), "agriha/%s/relay/state", mqttCfg.house_id);
+    String s = "{";
+    for (int i = 0; i < 8; i++) {
+      if (i > 0) s += ",";
+      s += "\"ch" + String(i + 1) + "\":" + (((relayState >> i) & 1) ? "1" : "0");
+    }
+    if (ep > 0) s += ",\"ts\":" + String(ep);
+    else        s += ",\"ts\":0";
+    s += "}";
+    mqttClient.publish(topic, s.c_str(), true);
+  }
 }
 
 // ============================================================
@@ -1417,12 +1378,6 @@ void greenhouseControl(unsigned long now) {
   for (int i = 0; i < GH_CTRL_SLOTS; i++) {
     if (!ghCtrl[i].enabled || ghCtrl[i].ch < 0 || ghCtrl[i].ch > 7) continue;
     int ch = ghCtrl[i].ch;
-
-    // CCM受信があるchはスキップ（CCM優先）
-    if (lastCcmRx[ch] > 0 &&
-        (now - lastCcmRx[ch]) < (unsigned long)ccmMap[ch].watchdog_sec * 1000UL) {
-      continue;
-    }
 
     // 温度取得
     float temp = NAN;
@@ -2220,7 +2175,7 @@ void rebootWithReason(const char* reason) {
 #include "web_dashboard.h"
 #include "web_api.h"
 #include "web_config.h"
-#include "web_ccm.h"
+#include "web_mqtt.h"
 #include "web_greenhouse.h"
 #include "web_irrigation.h"
 #include "web_protection.h"
@@ -2294,8 +2249,8 @@ void handleWebClient() {
     sendAPIConfig(client);
   } else if (method == "GET" && path == "/config") {
     sendConfigPage(client);
-  } else if (method == "GET" && path == "/ccm") {
-    sendCcmConfigPage(client);
+  } else if (method == "GET" && path == "/mqtt") {
+    sendMqttConfigPage(client);
   } else if (method == "GET" && path == "/ota") {
     sendOTAPage(client);
   } else if (method == "GET" && path == "/greenhouse") {
@@ -2314,8 +2269,8 @@ void handleWebClient() {
     handleProtectionPost(client, body);
   } else if (method == "POST" && path == "/api/config") {
     handleConfigPost(client, body);
-  } else if (method == "POST" && path == "/api/ccm") {
-    handleCcmConfigPost(client, body);
+  } else if (method == "POST" && path == "/api/mqtt") {
+    handleMqttConfigPost(client, body);
   } else if (method == "POST" && path.startsWith("/api/relay/")) {
     int ch = path.substring(11).toInt();
     handleRelayPost(client, ch, body);
@@ -2335,7 +2290,7 @@ void setup() {
   { unsigned long t = millis(); while (!Serial && millis() - t < 3000) delay(10); }  // USB-CDC ready (3s timeout)
   Serial.printf("=== %s v%s ===\n", FW_NAME, FW_VERSION);
   Serial.println("Board: RP2350-POE-ETH-8DI-8RO");
-  Serial.println("Protocol: UECS-CCM (UDP 224.0.0.1:16520)");
+  Serial.println("Protocol: MQTT over TCP (PubSubClient)");
 
   initRelaysOff();
 
@@ -2362,7 +2317,8 @@ void setup() {
   }
 
   loadConfig();
-  loadCcmMapping();
+  loadRelayChConfig();
+  loadMqttConfig();
   loadGreenhouseConfig();
   loadApertureConfig();
   for (int i = 0; i < APT_SLOTS; i++) {
@@ -2399,10 +2355,7 @@ void setup() {
   readSensors();
   initRS485();
 
-  // CCM UDP: join multicast group
-  ccmUDP.beginMulticast(CCM_MULTICAST, CCM_PORT);
-  Serial.printf("CCM: joined %s:%d\n",
-                CCM_MULTICAST.toString().c_str(), CCM_PORT);
+  initMqtt();
 
   // mDNS
   if (mdns_enabled) {
@@ -2453,9 +2406,6 @@ void loop() {
 
   handleWebClient();
 
-  // CCM receive (non-blocking)
-  ccmReceive();
-
   // Duration auto-off (manual timer)
   unsigned long now = millis();
   for (int i = 0; i < 8; i++) {
@@ -2466,15 +2416,26 @@ void loop() {
     }
   }
 
-  // CCM watchdog: 無通信タイマーでCCM claim取り下げ
-  for (int i = 0; i < 8; i++) {
-    if (ccmMap[i].watchdog_sec > 0 && lastCcmRx[i] > 0 &&
-        (relayClaims[i] & (1 << OWN_CCM)) &&
-        (now - lastCcmRx[i]) >= (unsigned long)ccmMap[i].watchdog_sec * 1000UL) {
-      releaseRelay(i + 1, OWN_CCM);
-      lastCcmRx[i] = 0;
-      Serial.printf("[WATCHDOG] CH%d CCM released — no CCM for %ds\n", i + 1, ccmMap[i].watchdog_sec);
+  // MQTT: duration_secタイマー → auto-OFF
+  {
+    unsigned long now2 = millis();
+    for (int i = 0; i < 8; i++) {
+      if (mqttDurationEnd[i] > 0 && now2 >= mqttDurationEnd[i]) {
+        releaseRelay(i + 1, OWN_MQTT);
+        mqttDurationEnd[i] = 0;
+        Serial.printf("[MQTT-DUR] CH%d auto-OFF (duration expired)\n", i + 1);
+      }
     }
+  }
+
+  // MQTT: 接続断でOWN_MQTT全解放
+  if (!mqttClient.connected() && mqttOnline) {
+    mqttOnline = false;
+    for (int i = 0; i < 8; i++) {
+      releaseRelay(i + 1, OWN_MQTT);
+      mqttDurationEnd[i] = 0;
+    }
+    Serial.println("[MQTT] disconnected — all MQTT claims released");
   }
 
   // DI interrupt
@@ -2484,30 +2445,38 @@ void loop() {
     if (readDI()) {
       // DI→リレー連動
       for (int i = 0; i < 8; i++) {
-        if (ccmMap[i].di_link < 0 || ccmMap[i].di_link > 7) continue;
-        bool di_on = diState[ccmMap[i].di_link];
-        bool target = ccmMap[i].di_invert ? !di_on : di_on;
+        if (relayCh[i].di_link < 0 || relayCh[i].di_link > 7) continue;
+        bool di_on = diState[relayCh[i].di_link];
+        bool target = relayCh[i].di_invert ? !di_on : di_on;
         if (target) claimRelay(i + 1, OWN_MANUAL);
         else        releaseRelay(i + 1, OWN_MANUAL);
         Serial.printf("[DI-LINK] DI%d=%s → CH%d %s\n",
-                      ccmMap[i].di_link + 1, di_on ? "ON" : "OFF",
+                      relayCh[i].di_link + 1, di_on ? "ON" : "OFF",
                       i + 1, target ? "ON" : "OFF");
       }
     }
   }
 
-  // Periodic: sensor read + CCM broadcast
+  // Periodic: sensor read + MQTT publish
   static unsigned long lastBroadcast = 0;
-  if (now - lastBroadcast >= (unsigned long)CCM_SEND_INTERVAL * 1000UL) {
+  if (now - lastBroadcast >= (unsigned long)mqttCfg.publish_interval * 1000UL) {
     lastBroadcast = now;
 
     readSensors();
     pollDrainSensor();
-    ccmSendStates();
+    // MQTT solar fallback
+    if (!ads1110_detected && !isnan(g_mqtt_solar_wm2)) {
+      g_solar_wm2 = g_mqtt_solar_wm2;
+    }
+    mqttPublishAll();
 
     Serial.printf("[%d] relay=0x%02X epoch=%lu uptime=%lus\n",
                   loopCount, relayState, getCurrentEpoch(), millis() / 1000);
   }
+
+  // MQTT reconnect + loop
+  mqttReconnect();
+  if (mqttCfg.enabled) mqttClient.loop();
 
   // Aperture (side window) control
   apertureControl(now);

@@ -31,7 +31,7 @@ extern int g_language;
 void printNavLinks(WiFiClient& client) {
   client.printf("<p>"
     "<a href='/'>%s</a> | "
-    "<a href='/ccm'>%s</a> | "
+    "<a href='/mqtt'>%s</a> | "
     "<a href='/greenhouse'>%s</a> | "
     "<a href='/irrigation'>%s</a> | "
     "<a href='/protection'>%s</a> | "
@@ -39,7 +39,7 @@ void printNavLinks(WiFiClient& client) {
     "<a href='/ota'>%s</a> | "
     "<a href='/api/language?lang=%s'>%s</a></p>\n",
     g_language==1 ? "ダッシュボード"  : "Dashboard",
-    g_language==1 ? "CCM割当"         : "CCM",
+    g_language==1 ? "MQTT設定"         : "MQTT",
     g_language==1 ? "温室制御"         : "Greenhouse",
     g_language==1 ? "灌水"             : "Irrigation",
     g_language==1 ? "保護制御"         : "Protection",
