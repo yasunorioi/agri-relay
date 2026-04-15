@@ -38,7 +38,7 @@ void sendConfigPage(WiFiClient& client) {
   client.printf("<label>DNS<input type=text name=dns value='%s'></label>\n", curDns.c_str());
   client.println("</div>");
   client.println("<div class=sec><h3>mDNS</h3>");
-  client.printf("<label>Hostname<input type=text name=mdns_hostname value='%s' maxlength=32 placeholder='uecs-ccm-01'></label>\n", mdnsHostname.c_str());
+  client.printf("<label>Hostname<input type=text name=mdns_hostname value='%s' maxlength=32 placeholder='ogms-01'></label>\n", mdnsHostname.c_str());
   client.printf("<p class=note>%s</p>\n", L("Access via <b>&lt;hostname&gt;.local</b>", "<b>&lt;hostname&gt;.local</b> でアクセス可能"));
   client.printf("<label><input type=checkbox name=mdns_enabled value=1%s> %s</label>\n",
                 mdns_enabled ? " checked" : "", L("Enable mDNS", "mDNS有効"));

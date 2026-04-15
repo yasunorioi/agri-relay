@@ -155,7 +155,7 @@ arduino-cli compile \
   .
 
 # OTA更新 (2回目以降)
-curl --data-binary @/tmp/ccm_ota/ccm_rp2350_relay.ino.bin \
+curl --data-binary @/tmp/ccm_ota/ogms.ino.bin \
   -H "Content-Type: application/octet-stream" \
   http://ogms-01.local/api/ota
 ```
