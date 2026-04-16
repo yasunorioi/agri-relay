@@ -28,11 +28,12 @@ Standalone greenhouse control, irrigation, and protection features built-in. EN/
 <details>
 <summary>🇯🇵 日本語</summary>
 
-| ボード | 購入先 |
+| ボード / ケーブル | 購入先 |
 |--------|--------|
 | RP2350-ETH-8DI-8RO | [Waveshare公式](https://www.waveshare.com/rp2350-eth-8di-8ro.htm) / [Amazon](https://www.amazon.com/dp/B0FVF19VRR) / [スイッチサイエンス](https://www.switch-science.com/) |
 | RP2350-POE-ETH-8DI-8RO (PoE版) | [Waveshare公式](https://www.waveshare.com/rp2350-poe-eth-8di-8ro.htm) |
 | M5Stack ADC Unit V1.1 (日射センサー用) | [M5Stack公式](https://shop.m5stack.com/products/adc-i2c-unit-v1-1-ads1100) / [スイッチサイエンス](https://www.switch-science.com/) |
+| Grove - 4ピンケーブル (I2Cセンサー接続用) | [スイッチサイエンス](https://www.switch-science.com/products/1048) |
 
 </details>
 
