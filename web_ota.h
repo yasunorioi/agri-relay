@@ -69,6 +69,8 @@ void handleOTAUpload(WiFiClient& client, int contentLength) {
   while (written < (size_t)contentLength) {
     watchdog_update();
 
+    yield();  // service USB-NCM + TinyUSB during OTA transfer
+
     int avail = client.available();
     if (avail > 0) {
       int toRead = min(avail, (int)sizeof(buf));
@@ -93,7 +95,7 @@ void handleOTAUpload(WiFiClient& client, int contentLength) {
       Update.end();
       return;
     } else {
-      delay(1);
+      yield();
     }
   }
 

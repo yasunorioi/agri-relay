@@ -35,6 +35,7 @@ void printNavLinks(WiFiClient& client) {
     "<a href='/greenhouse'>%s</a> | "
     "<a href='/irrigation'>%s</a> | "
     "<a href='/protection'>%s</a> | "
+    "<a href='/modbus'>%s</a> | "
     "<a href='/config'>%s</a> | "
     "<a href='/ota'>%s</a> | "
     "<a href='/api/language?lang=%s'>%s</a></p>\n",
@@ -43,6 +44,7 @@ void printNavLinks(WiFiClient& client) {
     g_language==1 ? "温室制御"         : "Greenhouse",
     g_language==1 ? "灌水"             : "Irrigation",
     g_language==1 ? "保護制御"         : "Protection",
+    "Modbus",
     g_language==1 ? "ネットワーク"     : "Network",
     g_language==1 ? "FW更新"           : "FW",
     g_language==0 ? "jp" : "en",

@@ -55,6 +55,7 @@ void sendGreenhousePage(WiFiClient& client) {
     }
     client.println("</table></span>");
     client.println("</div>");
+    yield();
   }
   client.printf("<input type=submit value='%s'>\n", L("Save Rules","ルールを保存"));
   client.println("</form></div>");
@@ -87,6 +88,7 @@ void sendGreenhousePage(WiFiClient& client) {
     client.printf("<label>%s:<input type=number name=apt_os%d value=%d min=1 max=300></label> ", L("Open(s)","開(秒)"), i, aptCtrl[i].open_seconds);
     client.printf("<label>%s:<input type=number name=apt_cs%d value=%d min=1 max=300></label>", L("Close(s)","閉(秒)"), i, aptCtrl[i].close_seconds);
     client.println("</div>");
+    yield();
   }
   client.printf("<input type=submit value='%s'>\n", L("Save Aperture","開度設定を保存"));
   client.println("</form></div>");

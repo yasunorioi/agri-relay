@@ -170,6 +170,21 @@ void sendAPIState(WiFiClient& client) {
     mqttObj["client_id"] = mqttCfg.client_id;
   }
 
+  // Modbus master status
+  {
+    JsonObject mbObj = doc["modbus"].to<JsonObject>();
+    mbObj["enabled"] = mbMaster.enabled;
+    JsonArray slvArr = mbObj["slaves"].to<JsonArray>();
+    for (int i = 0; i < MB_MAX_SLAVES; i++) {
+      JsonObject s = slvArr.add<JsonObject>();
+      s["en"]    = mbMaster.slaves[i].enabled;
+      s["addr"]  = mbMaster.slaves[i].addr;
+      s["ch"]    = mbMaster.slaves[i].ch_count;
+      s["label"] = mbMaster.slaves[i].label;
+      s["state"] = mbExtRelayState[i];
+    }
+  }
+
   // Last updated time string
   {
     unsigned long ep = getCurrentEpoch();

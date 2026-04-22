@@ -11,6 +11,7 @@
 //            W5500lwIP (arduino-pico内蔵), SensirionI2cSht4x (optional),
 //            LEAmDNS (arduino-pico内蔵), PubSubClient 2.8
 
+#include <Adafruit_TinyUSB.h>   // TinyUSB: CDC-ACM + NCM composite
 #include <SPI.h>
 #include <W5500lwIP.h>
 #include <ArduinoJson.h>        // v7.x
@@ -29,9 +30,10 @@
 
 #include "sw_watchdog.h"
 #include "sensor_registry.h"
+#include "usb_ncm.h"
 
 // ========== Firmware Version ==========
-const char* FW_VERSION = "2.0.0";
+const char* FW_VERSION = "2.1.0-modbus";
 const char* FW_NAME    = "ogms";
 
 // ========== Default Configuration ==========
@@ -457,6 +459,19 @@ void saveApertureConfig();
 float calcMoveDuration(int slot, float from_pct, float to_pct);
 void setTargetAperture(int slot, float target_pct);
 void apertureControl(unsigned long now);
+
+// ============================================================
+// yield() override — service USB-NCM during delay()/yield()
+// ============================================================
+extern "C" void yield() {
+#ifdef USE_TINYUSB
+  extern void TinyUSB_Device_Task(void);
+  extern void TinyUSB_Device_FlushCDC(void);
+  TinyUSB_Device_Task();
+  TinyUSB_Device_FlushCDC();
+#endif
+  usb_ncm_service();
+}
 
 // ============================================================
 // DI Interrupt
@@ -2172,6 +2187,7 @@ void rebootWithReason(const char* reason) {
 // ============================================================
 #include "web_common.h"
 #include "web_i18n.h"
+#include "modbus_master.h"
 #include "web_dashboard.h"
 #include "web_api.h"
 #include "web_config.h"
@@ -2179,6 +2195,7 @@ void rebootWithReason(const char* reason) {
 #include "web_greenhouse.h"
 #include "web_irrigation.h"
 #include "web_protection.h"
+#include "web_modbus.h"
 #include "web_ota.h"
 // ============================================================
 // Web Router
@@ -2190,7 +2207,7 @@ void handleWebClient() {
   client.setTimeout(500);
   unsigned long t = millis();
 
-  while (!client.available() && (millis() - t) < 500) delay(1);
+  while (!client.available() && (millis() - t) < 500) yield();
   if (!client.available()) { client.stop(); return; }
 
   String reqLine = client.readStringUntil('\n');
@@ -2267,6 +2284,12 @@ void handleWebClient() {
     sendProtectionPage(client);
   } else if (method == "POST" && path == "/api/protection") {
     handleProtectionPost(client, body);
+  } else if (method == "GET" && path == "/modbus") {
+    sendModbusConfigPage(client);
+  } else if (method == "POST" && path == "/api/modbus") {
+    handleModbusConfigPost(client, body);
+  } else if (method == "POST" && path == "/api/modbus/relay") {
+    handleModbusRelayPost(client, body);
   } else if (method == "POST" && path == "/api/config") {
     handleConfigPost(client, body);
   } else if (method == "POST" && path == "/api/mqtt") {
@@ -2333,6 +2356,10 @@ void setup() {
   Serial.printf("[BOOT] hostname: %s.local\n", mdnsHostname.c_str());
 
   initEthernet();
+
+  // USB-NCM: secondary netif (link-local, W5500 remains default)
+  usb_ncm_init();
+
   syncNTP();
   scanI2CSensors();
 
@@ -2354,6 +2381,7 @@ void setup() {
 
   readSensors();
   initRS485();
+  modbusMasterInit();
 
   initMqtt();
 
@@ -2366,7 +2394,8 @@ void setup() {
   }
 
   webServer.begin();
-  Serial.printf("WebUI: http://%s\n", eth.localIP().toString().c_str());
+  Serial.printf("WebUI: http://%s (W5500)\n", eth.localIP().toString().c_str());
+  Serial.printf("WebUI: http://192.168.7.1 (USB-NCM)\n");
 
   readDI();
 
@@ -2388,8 +2417,9 @@ void loop() {
 
   // [STATUS] 30秒毎デバッグ出力
   if (millis() - last_status >= 30000UL) {
-    Serial.printf("[STATUS] ip:%s up:%lus\n",
+    Serial.printf("[STATUS] eth:%s usb:%s up:%lus\n",
                   eth.localIP().toString().c_str(),
+                  usb_ncm_ip_str().c_str(),
                   millis() / 1000);
     last_status = millis();
   }
@@ -2403,6 +2433,8 @@ void loop() {
   }
 
   if (mdns_enabled) MDNS.update();
+
+  usb_ncm_service();  // USB-NCM packet processing
 
   handleWebClient();
 
@@ -2495,6 +2527,9 @@ void loop() {
 
   // CO2 guard
   co2GuardControl(now);
+
+  // Modbus master: poll external relay status
+  modbusMasterService(now);
 
   // Relay arbitration: claims → physical output
   resolveAllRelays();

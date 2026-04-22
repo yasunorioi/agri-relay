@@ -33,7 +33,8 @@ void sendIrrigationPage(WiFiClient& client) {
     client.printf("<td><select name=md%d><option value=0%s>Timer</option><option value=1%s>Duty</option></select></td>",
                   i, irriCtrl[i].mode == 0 ? " selected" : "", irriCtrl[i].mode == 1 ? " selected" : "");
     client.printf("<td><input type=number name=th%d value=%.3f min=0.01 max=10 step=0.01></td>", i, irriCtrl[i].threshold_mj);
-    client.printf("<td><input type=number name=mw%d value=%.0f min=0 max=500 step=10></td></tr>", i, irriCtrl[i].min_wm2);
+    client.printf("<td><input type=number name=mw%d value=%.0f min=0 max=500 step=10></td></tr>\n", i, irriCtrl[i].min_wm2);
+    yield();
   }
   client.println("</table>");
 
@@ -43,7 +44,8 @@ void sendIrrigationPage(WiFiClient& client) {
   for (int i = 0; i < IRRI_SLOTS; i++) {
     client.printf("<tr><td>%d</td>", i + 1);
     client.printf("<td><input type=number name=du%d value=%d min=10 max=3600></td>", i, irriCtrl[i].duration_sec);
-    client.printf("<td><input type=number name=ds%d value=%d min=0 max=300 step=5></td></tr>", i, irriCtrl[i].drain_stop_sec);
+    client.printf("<td><input type=number name=ds%d value=%d min=0 max=300 step=5></td></tr>\n", i, irriCtrl[i].drain_stop_sec);
+    yield();
   }
   client.println("</table>");
 
@@ -58,7 +60,8 @@ void sendIrrigationPage(WiFiClient& client) {
     client.printf("<td><input type=number name=dx%d value=%.0f min=0 max=100></td>", i, irriCtrl[i].duty_max * 100);
     client.printf("<td><input type=number name=dt%d value=%.0f min=1 max=50></td>", i, irriCtrl[i].duty_step * 100);
     client.printf("<td><input type=number name=dl%d value=%.0f min=0 max=100></td>", i, irriCtrl[i].drain_target_lo * 100);
-    client.printf("<td><input type=number name=dh%d value=%.0f min=0 max=100></td></tr>", i, irriCtrl[i].drain_target_hi * 100);
+    client.printf("<td><input type=number name=dh%d value=%.0f min=0 max=100></td></tr>\n", i, irriCtrl[i].drain_target_hi * 100);
+    yield();
   }
   client.println("</table>");
 
@@ -69,7 +72,8 @@ void sendIrrigationPage(WiFiClient& client) {
     client.printf("<td><select name=fd%d><option value=0%s>DI1</option><option value=1%s>DI2</option></select></td>",
                   i, irriCtrl[i].flow_di_ch == 0 ? " selected" : "", irriCtrl[i].flow_di_ch == 1 ? " selected" : "");
     client.printf("<td><input type=number name=fp%d value=%.3f min=0.01 max=100 step=0.01></td>", i, irriCtrl[i].flow_ml_per_pulse);
-    client.printf("<td><input type=number name=dp%d value=%.2f min=0.1 max=100 step=0.1></td></tr>", i, irriCtrl[i].drain_ml_per_tip);
+    client.printf("<td><input type=number name=dp%d value=%.2f min=0.1 max=100 step=0.1></td></tr>\n", i, irriCtrl[i].drain_ml_per_tip);
+    yield();
   }
   client.println("</table>");
 

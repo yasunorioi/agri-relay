@@ -87,6 +87,7 @@ void sendProtectionPage(WiFiClient& client) {
       client.printf("<option value=%d%s>CH%d</option>", c, co2Guard.actions[i].relay_ch == c ? " selected" : "", c + 1);
     client.printf("</select></td>");
     client.printf("<td><input type=number name=cd%d value=%d min=10 max=7200></td></tr>\n", i, co2Guard.actions[i].duration_sec);
+    yield();
   }
   client.println("</table></fieldset>");
 
